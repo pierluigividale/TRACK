@@ -1,0 +1,7 @@
+#!/bin/bash 
+
+for year in `seq 1959 1978`
+do
+    echo $year $month
+    sbatch ./SLURMscript_era5_retrieve_para $year
+done

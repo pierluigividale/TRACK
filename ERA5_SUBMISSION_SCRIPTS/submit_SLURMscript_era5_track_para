@@ -1,0 +1,16 @@
+#!/bin/bash 
+
+run='era5'
+trunc='T63'
+#trunc='T42'
+home='/home/users/plvidale/TRACK-1.5.2/'
+scrdir='/work/scratch-nopw2/plvidale/'${run}'/'
+link_var_log='False'
+add_names='addvor'
+
+for year in `seq 1959 1978`
+do
+    echo $run $year $trunc $home $scrdir $link_var_log $add_names
+    #sbatch --dependency=singleton ./SLURMscript_era5_track_para $run $year $trunc $home $scrdir $link_var_log $add_names
+    sbatch ./SLURMscript_era5_track_para $run $year $trunc $home $scrdir $link_var_log $add_names
+done

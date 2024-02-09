@@ -1,0 +1,16 @@
+#!/bin/bash 
+#SBATCH --partition=short-serial 
+#SBATCH -o %j.out 
+#SBATCH -e %j.err
+#SBATCH --time=480:00  # Need 480 mins if a retrieval from COPERNICUS IS included
+#SBATCH --mem=32000 # Set the amount of memory for the job in MB.
+
+# executable
+module add jaspy
+cd /gws/nopw/j04/primavera3/cache/vidale/TC/era5/T63_TCs
+python /home/users/plvidale/TRACK-1.5.2/scripts/cdsapi_retrieve.py $1
+cdo -f nc copy ERA5_VOR_6hr_${1}_DET.grib ERA5_VOR_6hr_${1}_DET.nc
+for lev in 850 700 600 500 250
+do
+    cdo -selvar,var138 -sellevel,${lev}00  ERA5_VOR_6hr_$1_DET.nc /work/scratch-nopw2/plvidale/era5/vor_${1}_${lev}.nc
+done

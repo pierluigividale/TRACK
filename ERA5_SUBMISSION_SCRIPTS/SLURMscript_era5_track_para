@@ -1,0 +1,10 @@
+#!/bin/bash 
+#SBATCH --partition=short-serial 
+#SBATCH -o %j.out 
+#SBATCH -e %j.err
+#SBATCH --time=50:00
+#SBATCH --mem=32000 # Set the amount of memory for the job in MB.
+
+# executable
+module add jaspy
+python track_ERA5_para.py $1 $2 $3 $4 $5 $6 $7
