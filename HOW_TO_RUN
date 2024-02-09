@@ -1,0 +1,11 @@
+These instructions assume that you have built TRACK in your own user area, so that key directories, such as "bin", "indat", "outdat", "SPECFILT" exist, and that you will be able to operate from that directory, including write new directories and files within.
+
+TRACKING
+The main script is track.py, which has been adapted for ERA5, so that the specific version is called "track_ERA5_para.py".
+
+The main tracking script is controlled by a submission script, called "submit_SLURMscript_era5_track_para", which submits a number of jobs to SLURM, one per year. Underneath that script is a small batch command, contained in "SLURMscript_era5_track_para".
+
+PRE-PROCESSING (OPTIONAL)
+In case you need to retrieve ERA5 data and pre-process, another set of SLURM scripts and commands is contained in "submit_SLURMscript_era5_retrieve_para" and "SLURMscript_era5_retrieve_para".
+
+
