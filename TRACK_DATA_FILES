@@ -1,0 +1,3 @@
+These are additional files needed by TRACK, which sit in ./data and in the main track directory (the land mask file).
+Put all data files in data (see the latest by date)
+Put the land mask in the main TRACK directory, either renamed to lmaks.dat, or symbolically linked, but it must have that name.
