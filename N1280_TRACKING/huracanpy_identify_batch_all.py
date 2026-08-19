@@ -32,11 +32,11 @@ matplotlib.use("Agg")  # no interactive display in batch mode
 # Configuration - edit before each run
 # ---------------------------------------------------------------------------
 BASE_DIR = "/Users/vidale/Python_scripts/TC-TRACKS"
-EXPERIMENTS = ["u-dd828"]
+#EXPERIMENTS = ["u-dd828"]
 EXPERIMENTS = ["u-ch330"]
 #EXPERIMENTS = ["u-dz876"]
 #YEARS = range(1980, 2014)  # 1980 to 2000 inclusive
-YEARS = range(1980, 1981) 
+YEARS = range(1980, 2000)
 
 # One entry per domain to process. "basin" is the WMO-TC convention code used
 # by huracanpy/wcsi (see huracanpy._basins.NH/SH) to restrict tracks to those
@@ -175,21 +175,12 @@ def compute_nature(tracks, filter_size):
                     track.is_tc.values,
                     vort_threshold=VORT_THRESHOLD,
                 )
-
-        #nat = nature.nature(
-        #    track.cps_b.values,
-        #    track.cps_vtl.values,
-        #    track.cps_vtu.values,
-        #    track.relative_vorticity.sel(pressure=850).values,
-        #    track.is_tc.values,
-        #    vort_threshold=VORT_THRESHOLD,
+        # We think that this is not necessary, so I am going to comment it out for now. If we find that the results are not as expected, we can uncomment it and see if it makes a difference.
+        #is_ocean = track.hrcn.get_is_ocean().values
+        #mislabelled = (nat == "TC") & ~is_ocean
+        #nat[mislabelled] = np.where(
+        #    track.cps_vtu.values[mislabelled] <= VTU_THRESHOLD, "Tr", "Ot"
         #)
-
-        is_ocean = track.hrcn.get_is_ocean().values
-        mislabelled = (nat == "TC") & ~is_ocean
-        nat[mislabelled] = np.where(
-            track.cps_vtu.values[mislabelled] <= VTU_THRESHOLD, "Tr", "Ot"
-        )
 
         track["nature"] = ("record", nat)
         nat_tracks.append(track)
