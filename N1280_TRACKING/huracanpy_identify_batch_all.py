@@ -33,10 +33,11 @@ matplotlib.use("Agg")  # no interactive display in batch mode
 # ---------------------------------------------------------------------------
 BASE_DIR = "/Users/vidale/Python_scripts/TC-TRACKS"
 #EXPERIMENTS = ["u-dd828"]
-EXPERIMENTS = ["u-ch330"]
+EXPERIMENTS = ["u-dc009"]
+#EXPERIMENTS = ["u-ch330"]
 #EXPERIMENTS = ["u-dz876"]
-#YEARS = range(1980, 2014)  # 1980 to 2000 inclusive
-YEARS = range(1980, 2000)
+#YEARS = range(2000, 2001)  # 1980 to 2000 inclusive
+YEARS = range(1980, 1981)
 
 # One entry per domain to process. "basin" is the WMO-TC convention code used
 # by huracanpy/wcsi (see huracanpy._basins.NH/SH) to restrict tracks to those
@@ -78,6 +79,9 @@ DOMAINS = {
         title="South Atlantic",
     ),
 }
+
+#SKIP_DOMAINS = {"MED", "NATL", "NWPAC", "SPAC", "EPAC", "NIO"}  # too sparse to be useful yet - storms in only 1-2 of 34 years
+SKIP_DOMAINS = {}  # too sparse to be useful yet - storms in only 1-2 of 34 years
 
 NATURE_MARKERS = {"TC": "o", "BC": "^", "Tr": "s", "MV": "D", "Ot": "X", "Vo": "P"}
 # mslp legend levels (hPa) - also sets the colour scale range; points outside
@@ -437,6 +441,8 @@ def main():
     for experiment in EXPERIMENTS:
         for year in YEARS:
             for domain_name, domain in DOMAINS.items():
+                if domain_name in SKIP_DOMAINS:
+                            continue    
                 try:
                     result = process_domain_year(experiment, year, domain_name, domain)
                 except Exception as exc:
