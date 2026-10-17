@@ -1,3 +1,4 @@
+import glob
 import os
 import sys
 
@@ -142,8 +143,7 @@ def add_fields(add_names,run,year,tr,trackfile,two_day_file,hemi):
     return trackfile_added
     
 def tcident(trackfile_tcident,home,trackdir,year):
-    # THE FOLLOWING LINE IS WRONG, but I temporarily leave it as is, so that all tcident is done no matter
-    if not os.path.exists(trackdir+'/'+trackfile_tcident):
+    if not os.path.exists(trackfile_tcident + '.wc.new.nc'):
         os.chdir(trackdir)   # cd into each track directory
         cmd_do('ln -fs '+home+'utils/TC/lmask_linux_wrap_hires.dat ' + 'lmask.dat')
         if hemi == '':
@@ -153,11 +153,11 @@ def tcident(trackfile_tcident,home,trackdir,year):
             startdate=year+'070100'
             cmd_do(home+'utils/bin/tcident < '+home+'tcident_n1280_SH.in', printflag=True)
         cmd_do('mv track.dat '         + trackfile_tcident+'.wc' , printflag=True)
-        cmd_do('/home/users/mjrobert/track_148b/TRACK/programs/count_30days '  + trackfile_tcident+' 0 0 5 4 0 ' + startdate + ' 6', printflag=True)
+        cmd_do(home+'utils/bin/count ' + trackfile_tcident+' 0 0 5 4 0 ' + startdate + ' 6', printflag=True)
         cmd_do(home+'utils/bin/tr2nc ' + trackfile_tcident+'.new' + ' s '+home+'utils/TR2NC/tr2nc.meta.addmslp.addwind', printflag=True)       
         cmd_do(home+'utils/bin/tr2nc ' + trackfile_tcident        + ' s '+home+'utils/TR2NC/tr2nc.meta.addmslp.addwind', printflag=True)
         cmd_do(home+'utils/bin/tr2nc ' + trackfile_tcident+'.wc'  + ' s '+home+'utils/TR2NC/tr2nc.meta.addmslp.addwind', printflag=True)
-        cmd_do('/home/users/mjrobert/track_148b/TRACK/programs/count_30days '  + trackfile_tcident+'.wc 0 0 5 4 0 ' + startdate + ' 6', printflag=True)        
+        cmd_do(home+'utils/bin/count ' + trackfile_tcident+'.wc 0 0 5 4 0 ' + startdate + ' 6', printflag=True)        
         cmd_do(home+'utils/bin/tr2nc ' + trackfile_tcident+'.wc.new' + ' s '+home+'utils/TR2NC/tr2nc.meta.addmslp.addwind', printflag=True)
         os.chdir(home)
         
@@ -246,6 +246,14 @@ if not skip_to_hart:
     # DONE TRACKING
 else:
     print('skip_to_hart is True: skipping vorticity computation and tracking phase')
+    # The Hart regZ step reads the annual geo file from scrdir. A previous full
+    # run's clean-up moved the annual files to permdir, so if link_variables
+    # above did not (re)create them from monthly files, link them back from
+    # permdir. Never replace a file that is already in scrdir.
+    for var in ["_geo", "_mslp", "_10m_wspeed"]:
+        annual = run + "_" + year + var + hemi + ".nc"
+        if not os.path.exists(scrdir + annual) and os.path.exists(permdir + annual):
+            cmd_do("ln -sf " + permdir + annual + " " + scrdir + annual, printflag=True)
 
 #CPL need this repeated, in case we only do tc_ident (or skip straight to Hart)
 trackfile=trackdir_full+trackname
@@ -266,8 +274,8 @@ hart_phase=Hart(run, hemi, year, final_file)
 
 # with WCSI, the TCIDENT pahse is no longer needed
 #   now do the tcident
-#trackfile_tcident = trackfile_added+'.tcident'
-#tcident(trackfile_tcident,home,trackdir_full,year)
+trackfile_tcident = final_file+'.tcident'
+tcident(trackfile_tcident,home,trackdir_full,year)
 
 if hemi == '':
     startdate=year+'010100'
@@ -282,12 +290,24 @@ if not os.path.exists(final_nc):
 else:
     print('Final NetCDF already exists, skipping count/tr2nc step: '+final_nc)
 
+def move_to_permdir(pattern):
+    """Move scrdir files matching pattern to permdir - but only remove symlinks:
+    a link in scrdir points back into permdir (see the skip_to_hart branch and
+    the computed_vortname branch), and mv-ing it there would replace the real
+    file with a link to itself.
+    """
+    for path in glob.glob(scrdir + pattern):
+        if os.path.islink(path):
+            cmd_do("rm " + path, printflag=True)
+        else:
+            cmd_do("mv " + path + " " + permdir, printflag=True)
+
 if not only_tcident and os.path.exists(final_nc):
     cmd_do("rm " + home + "outdat/*"+run+"_"+year+hemi+"*", printflag=True)
-    cmd_do("mv " + scrdir + "vor_"+run+"_"+year+"_*filt*.dat " + permdir, printflag=True)
-    cmd_do("mv " + scrdir + run+"_"+year+"_10m_wspeed*.nc " + permdir, printflag=True)
-    cmd_do("mv " + scrdir + run+"_"+year+"_mslp*.nc "       + permdir, printflag=True)
-    cmd_do("mv " + scrdir + run+"_"+year+"_geo*.nc "        + permdir, printflag=True)
+    move_to_permdir("vor_"+run+"_"+year+"_*filt*.dat")
+    move_to_permdir(run+"_"+year+"_10m_wspeed*.nc")
+    move_to_permdir(run+"_"+year+"_mslp*.nc")
+    move_to_permdir(run+"_"+year+"_geo*.nc")
     cmd_do("rm " + scrdir + run + "_" + year + "??_*.nc", printflag=True)
     cmd_do("rm " + scrdir + "vor_"+ run + "_" + year+"_???.*", printflag=True)
     cmd_do("rm " + scrdir + run + "_" + year + "??_uwinds*.nc", printflag=True)
