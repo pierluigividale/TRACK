@@ -6,6 +6,15 @@ run     = sys.argv[1]
 year    = sys.argv[2]
 tr      = sys.argv[3] # CAREFUL: there is currently a dependence in vorticity generation that is done at T63 and is needed at T42. Can re-code later.
 home    = '/home/users/plvidale/TRACK-1.5.2/'
+
+# EERIE (coupled atmosphere-ocean) experiments extract geopotential height at
+# 925/600/250 hPa instead of the standard 900/600/300 hPa (those are the only
+# levels available in their pp streams - confirmed with Leo Saffin that the
+# Hart phase-space parameters are still valid computed at these levels, at
+# the cost of some comparability to the other experiments). The regZ/hart
+# steps need separate _EERIE template files with these levels substituted in
+# - keep this set in sync with tc_workflow.py's EERIE_EXPERIMENTS.
+EERIE_EXPERIMENTS = {"dz876", "ec100"}
 scrdir  = sys.argv[4]
 permdir  = sys.argv[5]
 test = sys.argv[6]
@@ -113,10 +122,24 @@ def master_tracking(run,year,tr,hemi,vort_tracking_name,trackdir,trackdir_full,t
         print('TRACKING AT '+tr+' using vertical vorticity file called: '+vort_tracking_name)
         if hemi == '':
             #JAN-DEC setting for NH
-            cmd_do('master -c='+trackdir+' -e=track.pl -f=' +specname+' -i='+vort_tracking_name+' -j=RUN_AT.in -n=1,62,24 -o='+home+' -r=RUN_AT_ -s=RUNDATIN.vor_global_hilat_NH_'+tr,printflag=True)
+            cmd_do(home+'master -c='+trackdir+' -e=track.pl -f=' +specname+' -i='+vort_tracking_name+' -j=RUN_AT.in -n=1,62,24 -o='+home+' -r=RUN_AT_ -s=RUNDATIN.vor_global_hilat_NH_'+tr,printflag=True)
         elif hemi == '_SH':
             #JUL-JUN setting for SH
-            cmd_do('master -c='+trackdir+' -e=track.pl -f=' +specname+' -i='+vort_tracking_name+' -j=RUN_AT.in -n=1,62,24 -o='+home+' -r=RUN_AT_ -s=RUNDATIN.vor_global_hilat_SH_'+tr,printflag=True)  
+            # Pass the BASE name here, same style as NH above - do NOT add
+            # "_A" to this argument. master itself decides which sign of
+            # vorticity to track by checking indat/ for an "_A"-suffixed
+            # variant of whatever base name it's given (confirmed with Kevin
+            # Hodges): finding RUNDATIN.vor_global_hilat_SH_<tr>_A.in there
+            # is what tells it to track negative (SH cyclonic) anomalies.
+            # Passing the "_A" name directly (as this line used to) makes
+            # master probe for a nonexistent "<tr>_A_A" file instead and
+            # never finds the real one - confirmed 2026-10-23: that produced
+            # no track output at all for dd828/dz876 SH, not just redundant
+            # extra work. Both RUNDATIN.vor_global_hilat_NH_<tr>.in and
+            # RUNDATIN.vor_global_hilat_SH_<tr>_A.in must exist in indat/ at
+            # the same time for this detection to work (standing setup, not
+            # created per run).
+            cmd_do(home+'master -c='+trackdir+' -e=track.pl -f=' +specname+' -i='+vort_tracking_name+' -j=RUN_AT.in -n=1,62,24 -o='+home+' -r=RUN_AT_ -s=RUNDATIN.vor_global_hilat_SH_'+tr,printflag=True)
     return trackfile
 
 def add_fields(add_names,run,year,tr,trackfile,two_day_file,hemi):
@@ -165,12 +188,13 @@ def Hart(run, hemi, year, hart_output):
     if os.path.exists(hart_output):
         print('Hart output already exists, skipping Hart step: '+hart_output)
         return
+    eerie_suffix = '_EERIE' if run in EERIE_EXPERIMENTS else ''
     if hemi == '':
-        regin=home+'regZ_NH.in'
-        hartin=home+'hart_NH.in'
+        regin=home+'regZ_NH'+eerie_suffix+'.in'
+        hartin=home+'hart_NH'+eerie_suffix+'.in'
     elif hemi == '_SH':
-        regin=home+'regZ_SH.in'
-        hartin=home+'hart_SH.in'
+        regin=home+'regZ_SH'+eerie_suffix+'.in'
+        hartin=home+'hart_SH'+eerie_suffix+'.in'
     work_regZ=home+'work_'+run+'_'+year+'_regZ'+hemi+'.in'
     work_Hart=home+'work_'+run+'_'+year+'_hart'+hemi+'.in'
     cmd_do('cp '+regin+' '+work_regZ)
@@ -290,28 +314,47 @@ if not os.path.exists(final_nc):
 else:
     print('Final NetCDF already exists, skipping count/tr2nc step: '+final_nc)
 
-def move_to_permdir(pattern):
-    """Move scrdir files matching pattern to permdir - but only remove symlinks:
-    a link in scrdir points back into permdir (see the skip_to_hart branch and
-    the computed_vortname branch), and mv-ing it there would replace the real
-    file with a link to itself.
+def this_job_files(prefix):
+    """scrdir files starting with prefix that belong to this job's hemisphere:
+    SH files carry "_SH" in their names, NH files don't. Other years' and the
+    other hemisphere's files are never touched, so jobs running in parallel in
+    the same scrdir don't delete each other's inputs.
     """
-    for path in glob.glob(scrdir + pattern):
+    paths = glob.glob(scrdir + prefix + "*")
+    if hemi == '_SH':
+        return [p for p in paths if "_SH" in os.path.basename(p)]
+    return [p for p in paths if "_SH" not in os.path.basename(p)]
+
+
+def move_to_permdir(paths):
+    """Move files to permdir - but only remove symlinks: a link in scrdir points
+    back into permdir (see the skip_to_hart branch and the computed_vortname
+    branch), and mv-ing it there would replace the real file with a link to itself.
+    """
+    for path in paths:
         if os.path.islink(path):
             cmd_do("rm " + path, printflag=True)
         else:
             cmd_do("mv " + path + " " + permdir, printflag=True)
 
-if not only_tcident and os.path.exists(final_nc):
+
+# CLEAN-UP, once the last product of the cycle exists: keep the filtered
+# vorticity and the annual geo/mslp/10m wind files in permdir, then erase
+# everything else this job (run, year, hemisphere) left in scrdir, so the next
+# tracking cycle starts from a clean scratch directory
+final_tcident_nc = trackfile_tcident + '.wc.new.nc'
+if not only_tcident and os.path.exists(final_nc) and os.path.exists(final_tcident_nc):
     cmd_do("rm " + home + "outdat/*"+run+"_"+year+hemi+"*", printflag=True)
-    move_to_permdir("vor_"+run+"_"+year+"_*filt*.dat")
-    move_to_permdir(run+"_"+year+"_10m_wspeed*.nc")
-    move_to_permdir(run+"_"+year+"_mslp*.nc")
-    move_to_permdir(run+"_"+year+"_geo*.nc")
-    cmd_do("rm " + scrdir + run + "_" + year + "??_*.nc", printflag=True)
-    cmd_do("rm " + scrdir + "vor_"+ run + "_" + year+"_???.*", printflag=True)
-    cmd_do("rm " + scrdir + run + "_" + year + "??_uwinds*.nc", printflag=True)
-    cmd_do("rm " + scrdir + run + "_" + year + "??_vwinds*.nc", printflag=True)
+    vor_files = this_job_files("vor_"+run+"_"+year+"_")
+    move_to_permdir([p for p in vor_files if "filt" in os.path.basename(p) and p.endswith(".dat")])
+    for var in ["_10m_wspeed", "_mslp", "_geo"]:
+        move_to_permdir(this_job_files(run+"_"+year+var))
+    # everything else of this job: monthly and annual wind files, full-resolution
+    # and averaged vorticity, any other intermediates
+    for path in this_job_files("vor_"+run+"_"+year+"_") + this_job_files(run+"_"+year):
+        cmd_do("rm -f " + path, printflag=True)
     cmd_do("rm " + home + "work*" + run + "_" + year + "*.in", printflag=True)
-    print("Done tracking")
+    print("Done tracking; scratch cleaned for " + run + " " + year + hemi)
+elif not only_tcident:
+    print("Final files not all present (" + final_nc + ", " + final_tcident_nc + "): scratch NOT cleaned")
 quit()
