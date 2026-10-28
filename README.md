@@ -16,6 +16,8 @@ and what a new simulation needs before it can be added. Script-level detail
 (exact flags, file formats, known gotchas) lives in each script's own
 docstring; this README tells you which script to open.
 
+**Please note**: all scripts described here are contained in the N1280_TRACKING subdirectory on this repository. You can either copy them from PLV's home directory on JASMIN, under `/home/users/plvidale/TRACK-1.5.2/scripts`, or else download them from N1280_TRACKING on this repository.
+
 ## Two environments
 
 The pipeline spans two places that don't share a filesystem:
