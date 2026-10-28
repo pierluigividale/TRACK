@@ -129,7 +129,7 @@ Two things worth knowing before trusting a `status` "done" for a brand new
 experiment: (1) **`sacct`/SLURM "COMPLETED" is not a reliable success
 signal** for this pipeline - always check the real output files, which is
 what `status` does; (2) a short/truncated final year in the raw archive
-(TRACK's chunking can't handle a partial year) will fail silently rather
+(the way we have defined TRACK's chunking in this workflow can't handle a partial year right now, but TRACK is fully capable of doing that, so this is an important modification to come to the script in the coming weeks) will fail silently rather
 than erroring clearly - check the raw archive actually covers the full year
 range before assuming a "missing" year is a pipeline bug.
 
