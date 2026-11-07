@@ -375,9 +375,12 @@ if not only_tcident and os.path.exists(final_nc) and os.path.exists(final_tciden
     for path in this_job_files("vor_"+run+"_"+year+"_") + this_job_files(run+"_"+year):
         cmd_do("rm -f " + path, printflag=True)
     # Hemisphere-filtered like this_job_files(): an unfiltered glob here would
-    # delete the other hemisphere's still-in-use work_*.in files when both
-    # run concurrently for the same run+year (found 2026-11-07).
-    work_in_files = glob.glob(home + "work*" + run + "_" + year + "*.in")
+    # delete the other hemisphere's still-in-use work_* files when both run
+    # concurrently for the same run+year (found 2026-11-07). No ".in" suffix
+    # requirement: also catches add_fields()'s work_{run}_{year}_{addv}{hemi}
+    # copies (addvor/addmslp/addwind), which don't have one and were
+    # otherwise never cleaned up (found 2026-11-07, disk-space review).
+    work_in_files = glob.glob(home + "work*" + run + "_" + year + "*")
     if hemi == '_SH':
         work_in_files = [p for p in work_in_files if "_SH" in os.path.basename(p)]
     else:
