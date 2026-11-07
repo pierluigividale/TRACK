@@ -79,8 +79,9 @@ EXPERIMENTS = {
     "ck778": dict(source="n1280run", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
     "dd828": dict(source="plvidale", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
     "dc009": dict(source="torau", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
-    "dz876": dict(source="eerie", years={"NH": range(1960, 1963), "SH": range(1960, 1963)}),
-    "ec100": dict(source="eerie", years={"NH": range(1950, 1951)}),
+    "de443": dict(source="torau", years={"NH": range(1980, 1985), "SH": range(1980, 1985)}),
+    "dz876": dict(source="eerie", years={"NH": range(1950, 1964), "SH": range(1950, 1964)}),
+    "ec100": dict(source="eerie", years={"NH": range(1950, 1952)}),
 }
 
 # Experiments whose conversion step goes through pp_to_nc_iris_WCSI_EERIE.py

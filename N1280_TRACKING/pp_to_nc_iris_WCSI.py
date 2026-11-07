@@ -12,7 +12,7 @@ mon  = sys.argv[3]
 SOURCE_GROUP = {
     "ch330": "n1280run", "ck777": "n1280run", "ck778": "n1280run",
     "dd828": "plvidale",   # PLV's more recent runs
-    "dc009": "torau",      # Torsten's runs
+    "dc009": "torau", "de443": "torau",   # Torsten's runs
 }
 group = SOURCE_GROUP[name]
 

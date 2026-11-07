@@ -62,7 +62,13 @@ def link_lev_full_vort(vortname_nc):
         cmd_do("ln -sf " + scrdir+vortname_nc + " indat/"+vortname_nc,printflag=True)
 
 def names(run,year,tr):
-    specname              = run+"_"+year+"_"+tr
+    # specname must be unique per (run, year, hemisphere): it names shared
+    # working files under outdat/ (and, via master's own -f= convention,
+    # several more derived from it) that multiple jobs can otherwise collide
+    # on when run concurrently - confirmed 2026-11-07 when NH and SH jobs for
+    # the same run+year, run at the same time, clobbered each other's
+    # specname-derived files because hemi was missing here.
+    specname              = run+"_"+year+"_"+tr+hemi
     specname_1            = "specfil."+specname+"_band001"
     specname_0            = "specfil."+specname+"_band000"
     return specname,specname_0,specname_1
@@ -75,7 +81,9 @@ def compute_vort(lev,run,year,scrdir,hemi):
         vortname     = "vor_"+run+"_"+year+"_"+lev+"_SH"
     vortname_dat = vortname+".dat"
     vortname_nc  = vortname+".nc"
-    work_vorcalc = "work_vorcalc_"+run+"_"+year+".in"
+    # hemi is part of the name so concurrent NH/SH jobs for the same run+year
+    # don't overwrite each other's work file (see the note in names()).
+    work_vorcalc = "work_vorcalc_"+run+"_"+year+hemi+".in"
     if not os.path.exists("indat/"+vortname_dat):
         cmd_do('cp vorcalc.in '+work_vorcalc)
         if hemi == '':
@@ -158,8 +166,14 @@ def add_fields(add_names,run,year,tr,trackfile,two_day_file,hemi):
                 cmd_do("sed -i 's/YYYY/"+year+"/g; s/RUN/"+run+"/g; s/VORLEV/VOR_850/g; s/TTT/"+tr+"/g' "+waddname)
             else:
                 cmd_do("sed -i 's/YYYY/"+year+"/g; s/RUN/"+run+"/g; s/VORLEV/VOR_VERTAVG/g; s/TTT/"+tr+"/g' "+waddname)
-            cmd_do('bin/track.pl -f y'+year+' < '+waddname, printflag=True)
-            cmd_do('mv outdat/ff_trs.y'+year+'_addfld '+outfile, printflag=True)   
+            # identifier must include run and hemi, not just year: "y"+year
+            # alone made every experiment/hemisphere tracking the same year
+            # share one outdat/ff_trs.y<year>_addfld file, clobbering each
+            # other's add_fields output when run concurrently (found
+            # 2026-11-07 investigating a 10-job batch where 9 of 10 died).
+            addfld_id = run+'_'+year+hemi
+            cmd_do('bin/track.pl -f '+addfld_id+' < '+waddname, printflag=True)
+            cmd_do('mv outdat/ff_trs.'+addfld_id+'_addfld '+outfile, printflag=True)
         cmd_do('gzip '+trackfile)
         cmd_do('rm '+two_day_file+'_addvor' )
         cmd_do('rm '+two_day_file+'_addvor_addmslp')
@@ -344,6 +358,13 @@ def move_to_permdir(paths):
 # tracking cycle starts from a clean scratch directory
 final_tcident_nc = trackfile_tcident + '.wc.new.nc'
 if not only_tcident and os.path.exists(final_nc) and os.path.exists(final_tcident_nc):
+    # master's own per-period working directories (trackdir_full is already
+    # unique per run+year+hemi, so this is safe even with concurrent jobs).
+    # These were never actually removed by any automated step before -
+    # confirmed 2026-11-07 across every script variant in this directory -
+    # so they'd been piling up (~5MB and dozens of small files per trackdir,
+    # across the whole ensemble) until someone cleaned them up by hand.
+    cmd_do("rm -rf " + trackdir_full + "DJF_MAX_* " + trackdir_full + "DJF_MIN_*", printflag=True)
     cmd_do("rm " + home + "outdat/*"+run+"_"+year+hemi+"*", printflag=True)
     vor_files = this_job_files("vor_"+run+"_"+year+"_")
     move_to_permdir([p for p in vor_files if "filt" in os.path.basename(p) and p.endswith(".dat")])
@@ -353,7 +374,16 @@ if not only_tcident and os.path.exists(final_nc) and os.path.exists(final_tciden
     # and averaged vorticity, any other intermediates
     for path in this_job_files("vor_"+run+"_"+year+"_") + this_job_files(run+"_"+year):
         cmd_do("rm -f " + path, printflag=True)
-    cmd_do("rm " + home + "work*" + run + "_" + year + "*.in", printflag=True)
+    # Hemisphere-filtered like this_job_files(): an unfiltered glob here would
+    # delete the other hemisphere's still-in-use work_*.in files when both
+    # run concurrently for the same run+year (found 2026-11-07).
+    work_in_files = glob.glob(home + "work*" + run + "_" + year + "*.in")
+    if hemi == '_SH':
+        work_in_files = [p for p in work_in_files if "_SH" in os.path.basename(p)]
+    else:
+        work_in_files = [p for p in work_in_files if "_SH" not in os.path.basename(p)]
+    for p in work_in_files:
+        cmd_do("rm " + p, printflag=True)
     print("Done tracking; scratch cleaned for " + run + " " + year + hemi)
 elif not only_tcident:
     print("Final files not all present (" + final_nc + ", " + final_tcident_nc + "): scratch NOT cleaned")
