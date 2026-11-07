@@ -39,6 +39,19 @@ def cmd_do(command,printflag=False):
         print(command)
 
 def link_variables(varnames, run, scrdir, year, hemi):
+    # Monthly inputs are deliberately NOT deleted after the cdo cat below
+    # (found 2026-11-07): NH's Jan-Dec(year) and SH's Jul(year)-Jun(year+1)
+    # windows overlap by 6 months each, so the other hemisphere's job for
+    # the same run+year still needs these same monthly files - pp_to_nc_iris_WCSI.py
+    # and ll_to_gg_n1280.py now skip their own (expensive) work when a
+    # month's output already exists, so leaving the files in place lets
+    # that hemisphere reuse them instead of re-converting from raw pp.
+    # Scratch isn't quota-constrained for this and experiments are run one
+    # at a time, so there's no pressure to clean these up immediately; they
+    # go away with the rest of scrdir once an experiment's run is done.
+    # (This also fixes a latent bug: the old unconditional rm deleted the
+    # monthly sources even when cdo cat had silently failed, losing the
+    # only copy of that month's converted data.)
     for var in varnames:
         filename=  scrdir+run+"_"+year+var+hemi+".nc"
         linkname="indat/"+run+"_"+year+var+hemi+".nc"
@@ -49,12 +62,10 @@ def link_variables(varnames, run, scrdir, year, hemi):
                 else:
                     cmd_do("cdo cat "+scrdir+run+"_"+year+"{01..12}"+var+".nc "+filename,printflag=True)
                 cmd_do("ln -sf " + filename + " " + linkname)
-                cmd_do("rm "+scrdir+run+"_"+year+"??"+var+'.nc',printflag=True)
             elif hemi == '_SH':
                 yearp1 = str(int(year)+1)
                 cmd_do("cdo cat "+scrdir+run+"_"+year+"{07..12}"+var+".nc "+scrdir+run+"_"+yearp1+"{01..06}"+var+".nc " + filename,printflag=True)
                 cmd_do("ln -sf " + filename + " " + linkname)
-                cmd_do("rm "+scrdir+run+"_"+year+"{07..12}"+var+".nc "+scrdir+run+"_"+yearp1+"{01..06}"+var+".nc",printflag=True)
 
 def link_lev_full_vort(vortname_nc):
     # select and LINK full resolution level vorticity
@@ -130,7 +141,14 @@ def master_tracking(run,year,tr,hemi,vort_tracking_name,trackdir,trackdir_full,t
         print('TRACKING AT '+tr+' using vertical vorticity file called: '+vort_tracking_name)
         if hemi == '':
             #JAN-DEC setting for NH
-            cmd_do(home+'master -c='+trackdir+' -e=track.pl -f=' +specname+' -i='+vort_tracking_name+' -j=RUN_AT.in -n=1,62,24 -o='+home+' -r=RUN_AT_ -s=RUNDATIN.vor_global_hilat_NH_'+tr,printflag=True)
+            # 2014 only: the raw pp archive stops ~10-11 days short of a full
+            # year (last file is a Dec-11 10-day cycle, so data runs to
+            # ~Dec 20, confirmed on disk 2026-11-07), too few frames for the
+            # standard -n=1,62,24. Kevin Hodges: reduce the 2nd value by 1-2
+            # to match; using -2 (60) as the more conservative of the two.
+            # Every other year keeps the standard setting.
+            n_arg = '1,60,24' if year == '2014' else '1,62,24'
+            cmd_do(home+'master -c='+trackdir+' -e=track.pl -f=' +specname+' -i='+vort_tracking_name+' -j=RUN_AT.in -n='+n_arg+' -o='+home+' -r=RUN_AT_ -s=RUNDATIN.vor_global_hilat_NH_'+tr,printflag=True)
         elif hemi == '_SH':
             #JUL-JUN setting for SH
             # Pass the BASE name here, same style as NH above - do NOT add
@@ -340,6 +358,18 @@ def this_job_files(prefix):
     return [p for p in paths if "_SH" not in os.path.basename(p)]
 
 
+def exclude_monthly(paths):
+    """Exclude this run+year's monthly conversion files (run_YYYYMM_var.nc,
+    e.g. ch330_198007_geo.nc) from a list otherwise meant for deletion -
+    kept deliberately (see link_variables()) so the other hemisphere's job
+    for the same run+year can reuse them instead of re-converting from raw
+    pp (found 2026-11-07). Annual files (run_YYYY_var.nc, no extra digits
+    between year and variable name) are unaffected and still get deleted.
+    """
+    prefix = run + "_" + year
+    return [p for p in paths if not os.path.basename(p)[len(prefix):len(prefix)+2].isdigit()]
+
+
 def move_to_permdir(paths):
     """Move files to permdir - but only remove symlinks: a link in scrdir points
     back into permdir (see the skip_to_hart branch and the computed_vortname
@@ -370,9 +400,10 @@ if not only_tcident and os.path.exists(final_nc) and os.path.exists(final_tciden
     move_to_permdir([p for p in vor_files if "filt" in os.path.basename(p) and p.endswith(".dat")])
     for var in ["_10m_wspeed", "_mslp", "_geo"]:
         move_to_permdir(this_job_files(run+"_"+year+var))
-    # everything else of this job: monthly and annual wind files, full-resolution
-    # and averaged vorticity, any other intermediates
-    for path in this_job_files("vor_"+run+"_"+year+"_") + this_job_files(run+"_"+year):
+    # everything else of this job: annual wind files, full-resolution and
+    # averaged vorticity, any other intermediates - NOT the monthly
+    # conversion files, deliberately kept (exclude_monthly, see above)
+    for path in this_job_files("vor_"+run+"_"+year+"_") + exclude_monthly(this_job_files(run+"_"+year)):
         cmd_do("rm -f " + path, printflag=True)
     # Hemisphere-filtered like this_job_files(): an unfiltered glob here would
     # delete the other hemisphere's still-in-use work_* files when both run

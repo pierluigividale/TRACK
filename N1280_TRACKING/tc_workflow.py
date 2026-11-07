@@ -33,17 +33,24 @@ TRUNC = "T63"
 # processed for that experiment at all. scrdir/permdir follow the existing
 # submit scripts' convention and need no per-experiment override.
 #
-# NH range: capped at 2013, NOT 2014. All 5 experiments' raw archives have
-# monthly files through Dec 2014, but the Dec 2014 file itself is truncated -
-# the model runs actually stop on 2014-12-21 (confirmed identically for
-# ck777 and ck778: annual geo.nc time axis ends 2014-12-21 00:00, and the
-# raw apc archive is missing the normal third ~10-day December chunk). With
-# a genuinely short final year, master_tracking()'s hardcoded -n=1,62,24
-# chunking runs out of data mid-chunk and silently exits with no track
-# output at all - every NH 2014 job fails identically for every experiment,
-# wasting the full run before failing at the master step. Not fixable
-# without either 2015 data (doesn't exist) or Kevin adjusting master's
-# chunking to track a short final period - ask him before re-adding 2014.
+# NH range: now extends to 2014 for the 5 main ensemble members. All 5
+# experiments' raw archives have monthly files through Dec 2014, but the
+# Dec 2014 file itself is truncated - the model runs actually stop on
+# 2014-12-21 (confirmed identically for ch330/ck777/ck778/dd828/dc009: last
+# raw apc file on disk is the pc20141211 10-day cycle for every one of
+# them, so real data runs to ~2014-12-20, missing the normal third ~10-day
+# December chunk - about 10-11 days short of a full year). That broke
+# master_tracking()'s hardcoded -n=1,62,24 chunking, which ran out of data
+# mid-chunk and silently exited with no track output - every NH 2014 job
+# failed identically for every experiment, wasting the full run before
+# failing at the master step. Fixed 2026-11-07 (Kevin Hodges): for year
+# 2014 only, track_n1280_para_WCSI.py's master_tracking() now passes
+# -n=1,60,24 (2nd value reduced by 2 to match the shorter year) instead of
+# the standard -n=1,62,24; every other year is unaffected. This also
+# completes SH 2013's permdir-reuse path below (SH 2013 = Jul2013-Jun2014
+# needs NH 2014's persisted annual files for its Jan-Jun2014 half) - without
+# it, SH 2013 still works, just falls back to a real conversion for that
+# half instead of reusing NH's output.
 # SH range: an SH "year" Y covers Jul(Y)-Jun(Y+1), so SH year=2014 would need
 # 2015 data that doesn't exist - SH stays capped at 2013. ch330/ck777/ck778's
 # raw data starts Mar 1979 (SH 1979 = Jul1979-Jun1980, fully present), but
@@ -74,11 +81,11 @@ TRUNC = "T63"
 # Both are still running - re-check for newly-completed years before
 # re-running `submit` next time, rather than assuming this range is final.
 EXPERIMENTS = {
-    "ch330": dict(source="n1280run", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
-    "ck777": dict(source="n1280run", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
-    "ck778": dict(source="n1280run", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
-    "dd828": dict(source="plvidale", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
-    "dc009": dict(source="torau", years={"NH": range(1980, 2014), "SH": range(1980, 2014)}),
+    "ch330": dict(source="n1280run", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
+    "ck777": dict(source="n1280run", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
+    "ck778": dict(source="n1280run", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
+    "dd828": dict(source="plvidale", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
+    "dc009": dict(source="torau", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
     "de443": dict(source="torau", years={"NH": range(1980, 1985), "SH": range(1980, 1985)}),
     "dz876": dict(source="eerie", years={"NH": range(1950, 1964), "SH": range(1950, 1964)}),
     "ec100": dict(source="eerie", years={"NH": range(1950, 1952)}),

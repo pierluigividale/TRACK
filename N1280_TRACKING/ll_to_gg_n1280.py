@@ -38,6 +38,18 @@ tempout4 = dirout+name+'_'+year+mon+'_temp_10m_wspeed.nc'
 filenameout_gg  = dirout+name+'_'+year+mon+'_uwinds_gg.nc'
 filenameout1_gg = dirout+name+'_'+year+mon+'_vwinds_gg.nc'
 
+# Same check as pp_to_nc_iris_WCSI.py (found 2026-11-07): if the final
+# output already exists - e.g. the other hemisphere's job already
+# converted this calendar month - the intermediate filenameout/filenameout1
+# this script reads won't exist any more (already deleted below on that
+# earlier run), so running the remapcon/mv steps unconditionally would
+# error on a missing input and risk clobbering the good "_gg" files with a
+# failed cdo call's output. Skip entirely instead.
+if all(os.path.exists(f) for f in
+       [filenameout_gg, filenameout1_gg, filenameout2, filenameout3, filenameout4]):
+    print("Regridded output for "+name+" "+year+mon+" already exists - skipping resample/regrid.")
+    sys.exit(0)
+
 start = time.time()
 print("start ", start)
 

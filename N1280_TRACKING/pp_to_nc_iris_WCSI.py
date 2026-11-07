@@ -56,6 +56,20 @@ filenameout2 = dirout+name+'_'+year+mon+'_geo.nc'
 filenameout3 = dirout+name+'_'+year+mon+'_mslp.nc'
 filenameout4 = dirout+name+'_'+year+mon+'_10m_wspeed.nc'
 
+# This month's conversion may already be done - by this same job on a
+# retry, or more commonly by the OTHER hemisphere's convert job for this
+# same (run, calendar month), since NH and SH windows overlap by 6 months
+# (found 2026-11-07). ll_to_gg_n1280.py produces the final "_gg" names for
+# uwinds/vwinds (deleting these intermediate ones); geo/mslp/wspeed keep
+# these same names as their final form. Skip the expensive iris decode
+# below if all 5 final files are already there.
+filenameout_gg  = dirout+name+'_'+year+mon+'_uwinds_gg.nc'
+filenameout1_gg = dirout+name+'_'+year+mon+'_vwinds_gg.nc'
+if all(os.path.exists(f) for f in
+       [filenameout_gg, filenameout1_gg, filenameout2, filenameout3, filenameout4]):
+    print("Converted output for "+name+" "+year+mon+" already exists - skipping pp conversion.")
+    sys.exit(0)
+
 start = time.time()
 print("start ", start)
 
