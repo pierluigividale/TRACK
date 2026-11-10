@@ -1,4 +1,5 @@
 import iris
+import subprocess
 import time
 import sys
 import os
@@ -38,17 +39,38 @@ tempout4 = dirout+name+'_'+year+mon+'_temp_10m_wspeed.nc'
 filenameout_gg  = dirout+name+'_'+year+mon+'_uwinds_gg.nc'
 filenameout1_gg = dirout+name+'_'+year+mon+'_vwinds_gg.nc'
 
-# Same check as pp_to_nc_iris_WCSI.py (found 2026-11-07): if the final
-# output already exists - e.g. the other hemisphere's job already
-# converted this calendar month - the intermediate filenameout/filenameout1
-# this script reads won't exist any more (already deleted below on that
-# earlier run), so running the remapcon/mv steps unconditionally would
-# error on a missing input and risk clobbering the good "_gg" files with a
-# failed cdo call's output. Skip entirely instead.
-if all(os.path.exists(f) for f in
-       [filenameout_gg, filenameout1_gg, filenameout2, filenameout3, filenameout4]):
-    print("Regridded output for "+name+" "+year+mon+" already exists - skipping resample/regrid.")
-    sys.exit(0)
+def file_ntime(filename):
+    try:
+        out = subprocess.check_output(["cdo", "-s", "ntime", filename], stderr=subprocess.DEVNULL)
+        return int(out.decode().split()[0])
+    except Exception:
+        return -1
+
+def file_days(filename):
+    try:
+        out = subprocess.check_output(["cdo", "-s", "showdate", filename], stderr=subprocess.DEVNULL)
+        return len(set(out.decode().split()))
+    except Exception:
+        return -1
+
+def already_6hourly(filename):
+    # True only if this file is already down to a 6-hourly-or-coarser
+    # cadence (<=4 steps/day, +2 slack for the stray edge-of-month
+    # timestamp cdo cat sometimes pulls in) - regardless of WHICH hours,
+    # so this also correctly recognises wspeed's legitimate 3/9/15/21
+    # offset cadence (see WSPEED_SELHOUR below) as already-done.
+    #
+    # Found 2026-11-11: dd828's Jan-Mar 2013 mslp sat genuinely 3-hourly (8
+    # steps/day) under its FINAL filename because pp_to_nc_iris_WCSI.py had
+    # re-extracted it fresh from raw .pp (its own skip-if-exists check
+    # isn't per-variable - one missing wind intermediate left over from an
+    # interrupted earlier attempt was enough to trigger redoing all 5
+    # outputs) while this script's OLD top-of-file gate only checked that
+    # all 5 final files existed, not that they'd actually been resampled -
+    # so it exited early and the fresh 3-hourly mslp was never downsampled.
+    nt = file_ntime(filename)
+    nd = file_days(filename)
+    return nt >= 0 and nd > 0 and nt <= nd * 4 + 2
 
 start = time.time()
 print("start ", start)
@@ -73,42 +95,68 @@ winds = True
 # that's scheduled.
 WSPEED_SELHOUR = {"dd828": "3,9,15,21", "dc009": "3,9,15,21", "ec100": "3,9,15,21"}.get(name, "0,6,12,18")
 
+# Fast-path skip for months that are genuinely fully done: both regrids
+# already produced, and geo/mslp/wspeed already at a 6-hourly-or-coarser
+# cadence (not just present - see already_6hourly's docstring above for why
+# existence alone isn't enough). winds/filenameout(1) aren't checked here
+# since a successful regrid already deletes them, so gg existing is the
+# right signal for them specifically.
+if (os.path.exists(filenameout_gg) and os.path.exists(filenameout1_gg)
+        and already_6hourly(filenameout2) and already_6hourly(filenameout3)
+        and already_6hourly(filenameout4)):
+    print("Regridded output for "+name+" "+year+mon+" already exists and is correctly resampled - skipping.")
+    sys.exit(0)
+
+# Per-file, not all-or-nothing (replaces the old single os.path.exists-only
+# gate that used to sit at the top of this script - see already_6hourly's
+# docstring above for why that was wrong): each of winds/geo/mslp/wspeed is
+# only resampled if it isn't ALREADY at a 6-hourly-or-coarser cadence, and
+# only if its input file is actually present (it may already have been
+# deleted by a prior successful regrid, for winds specifically).
+RESAMPLE_TARGETS = [
+    (filenameout,  tempout,  '0,6,12,18',    winds),
+    (filenameout1, tempout1, '0,6,12,18',    winds),
+    (filenameout2, tempout2, '0,6,12,18',    True),
+    (filenameout3, tempout3, '0,6,12,18',    True),
+    (filenameout4, tempout4, WSPEED_SELHOUR, True),
+]
+
 if sixhour_resample:
-    if winds:
-        command = 'cdo -P 16 selhour,0,6,12,18 ' + filenameout + ' ' + tempout
+    for fname, tname, hours, enabled in RESAMPLE_TARGETS:
+        if not enabled or not os.path.exists(fname) or already_6hourly(fname):
+            continue
+        command = 'cdo -P 16 selhour,' + hours + ' ' + fname + ' ' + tname
         os.system(command)
-        command = 'mv ' + tempout + ' ' +filenameout
+        if os.path.exists(tname):
+            command = 'mv ' + tname + ' ' + fname
+            os.system(command)
+
+# Only delete the pre-regrid intermediate once remapcon has actually
+# produced the final "_gg" file - found 2026-11-10, diagnosing a gap where
+# dd828 had uwinds_gg for only 198 of ~455 months despite vwinds_gg being
+# complete: the old unconditional rm here deleted filenameout/filenameout1
+# even when cdo remapcon failed (e.g. a scratch quota hit mid-regrid),
+# leaving neither the intermediate nor the final file - a dead end that
+# could only be recovered by re-running pp_to_nc_iris_WCSI.py from the raw
+# pp file for that month. Same verify-before-delete pattern already used in
+# track_n1280_para_WCSI.py's link_variables().
+if os.path.exists(filenameout):
+    command = 'cdo -P 16 remapcon,n640 '+filenameout+' '+filenameout_gg
+    os.system(command)
+    if os.path.exists(filenameout_gg):
+        command = 'rm '+filenameout
         os.system(command)
+    else:
+        print('remapcon failed to produce '+filenameout_gg+' - keeping '+filenameout+' for retry')
 
-        command = 'cdo -P 16 selhour,0,6,12,18 ' + filenameout1 + ' ' + tempout1
+if os.path.exists(filenameout1):
+    command = 'cdo -P 16 remapcon,n640 '+filenameout1+' '+filenameout1_gg
+    os.system(command)
+    if os.path.exists(filenameout1_gg):
+        command = 'rm '+filenameout1
         os.system(command)
-        command = 'mv ' + tempout1 + ' ' +filenameout1
-        os.system(command)
-
-    command = 'cdo -P 16 selhour,0,6,12,18 ' + filenameout2 + ' ' + tempout2
-    os.system(command)
-    command = 'mv ' + tempout2 + ' ' +filenameout2
-    os.system(command)
-
-    command = 'cdo -P 16 selhour,0,6,12,18 ' + filenameout3 + ' ' + tempout3
-    os.system(command)
-    command = 'mv ' + tempout3 + ' ' +filenameout3
-    os.system(command)
-
-    command = 'cdo -P 16 selhour,' + WSPEED_SELHOUR + ' ' + filenameout4 + ' ' + tempout4
-    os.system(command)
-    command = 'mv ' + tempout4 + ' ' +filenameout4
-    os.system(command)
-
-command = 'cdo -P 16 remapcon,n640 '+filenameout+' '+filenameout_gg
-os.system(command)
-command = 'rm '+filenameout
-os.system(command)
-
-command = 'cdo -P 16 remapcon,n640 '+filenameout1+' '+filenameout1_gg
-os.system(command)
-command = 'rm '+filenameout1
-os.system(command)
+    else:
+        print('remapcon failed to produce '+filenameout1_gg+' - keeping '+filenameout1+' for retry')
 
 end = time.time()
 print('time taken ', end - start)

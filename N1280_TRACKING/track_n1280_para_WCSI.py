@@ -1,5 +1,6 @@
 import glob
 import os
+import subprocess
 import sys
 
 run     = sys.argv[1]
@@ -84,6 +85,14 @@ def names(run,year,tr):
     specname_0            = "specfil."+specname+"_band000"
     return specname,specname_0,specname_1
            
+def ntime(filename):
+    # number of timesteps cdo finds in a netcdf file, or -1 if it can't be read
+    try:
+        out = subprocess.check_output(["cdo", "-s", "ntime", filename], stderr=subprocess.DEVNULL)
+        return int(out.decode().split()[0])
+    except Exception:
+        return -1
+
 def compute_vort(lev,run,year,scrdir,hemi):
     # Create full resolution vorticities
     if hemi == '':
@@ -95,6 +104,28 @@ def compute_vort(lev,run,year,scrdir,hemi):
     # hemi is part of the name so concurrent NH/SH jobs for the same run+year
     # don't overwrite each other's work file (see the note in names()).
     work_vorcalc = "work_vorcalc_"+run+"_"+year+hemi+".in"
+
+    # A cached vortname_nc can "exist" but be truncated mid-write by an
+    # external interruption (e.g. the scratch-quota outage found 2026-11-10,
+    # same failure mode as ll_to_gg_n1280.py's pre-fix bug) - found 2026-11-11
+    # via dc009 SH's 700hPa level being incomplete in literally every year
+    # back to 1980, because the old exists-only check below let that
+    # truncated file be reused by every subsequent retry forever instead of
+    # ever being regenerated, which fed cdo ensavg a too-short "700" member
+    # and corrupted the whole year's averaged vorticity. Compare against the
+    # annual wind file's own timestep count (the authoritative source every
+    # level's vorticity is derived from) and wipe + redo both the .dat and
+    # .nc if the cached ones are short.
+    if os.path.exists("indat/"+vortname_nc):
+        wind_nc = scrdir+run+"_"+year+"_uwinds_gg"+hemi+".nc"
+        want = ntime(wind_nc)
+        have = ntime("indat/"+vortname_nc)
+        if want >= 0 and have < want:
+            print("WARNING: "+vortname_nc+" has "+str(have)+"/"+str(want)+" timesteps - treating as incomplete, regenerating")
+            for stale in ("indat/"+vortname_dat, "indat/"+vortname_nc, scrdir+vortname_dat, scrdir+vortname_nc):
+                if os.path.exists(stale):
+                    os.remove(stale)
+
     if not os.path.exists("indat/"+vortname_dat):
         cmd_do('cp vorcalc.in '+work_vorcalc)
         if hemi == '':
