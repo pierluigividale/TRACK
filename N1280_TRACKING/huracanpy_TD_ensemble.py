@@ -31,6 +31,7 @@ import xarray as xr
 from matplotlib.colors import LogNorm
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MultipleLocator
+from cartopy.util import add_cyclic_point
 from scipy.ndimage import gaussian_filter
 
 from huracanpy_identify_batch_all import BASE_DIR, DOMAINS
@@ -39,8 +40,14 @@ from huracanpy_identify_batch_all import BASE_DIR, DOMAINS
 # TC_RUN_DIR=TCIDENT_WC_RUN python huracanpy_TD_ensemble.py
 BASE_DIR = os.path.join(BASE_DIR, os.environ.get("TC_RUN_DIR", "NEW_WCSI_RUN"))
 
-EXPERIMENTS = ["u-ch330", "u-ck777", "u-ck778", "u-dd828","u-dc009"]
-YEARS = range(1980, 2014)
+EXPERIMENTS = ["u-ch330", "u-ck777", "u-ck778", "u-dc009"]  # u-dd828 excluded: shorter radiation timestep
+# experiment, confirmed outlier (r vs IBTrACS 0.24 vs 0.60-0.62 for the others
+# in NATL counts) - excluded until the pressure-wind intensity check lands
+YEARS = range(1980, 2015)  # NH now includes 2014; SH stays capped at 2013 (harmless skip)
+# Optional override, e.g. TC_YEARS=1980-1989, for runs covering only part of the period
+if os.environ.get("TC_YEARS"):
+    _first, _last = (int(x) for x in os.environ["TC_YEARS"].split("-"))
+    YEARS = range(_first, _last + 1)
 BIN_SIZE = 3
 LON_RANGE = (0, 360)
 LAT_RANGE = (-90, 90)
@@ -49,6 +56,9 @@ GRID_LABEL_SPACING = 20  # degrees - interval of the lon/lat labels on the map b
 SPREAD_SMOOTH_SIGMA = 1.5  # grid cells - see gaussian_filter call in plot_domain_ensemble
 
 SKIP_DOMAINS = {"MED"}
+# Optional: only these domains, e.g. TC_DOMAINS=SIO,SPAC,SATL for a Southern Hemisphere run folder
+if os.environ.get("TC_DOMAINS"):
+    SKIP_DOMAINS = set(SKIP_DOMAINS) | (set(DOMAINS) - set(os.environ["TC_DOMAINS"].split(",")))
 # Small panels, in this order, for the natures that occur in the data (at most
 # six): WCSI runs have TC/BC/Tr/MV/Vo/Ot, the tcident run only TC and NT
 NATURES = ["TC", "BC", "Tr", "MV", "Vo", "Ot", "NT"]
@@ -87,6 +97,25 @@ def density(lon, lat):
         lon, lat, method="histogram", bin_size=BIN_SIZE,
         lon_range=LON_RANGE, lat_range=LAT_RANGE, spherical=False,
     )
+
+
+def add_lon_cyclic(da):
+    """Append a copy of the first lon column at lon.max()+bin_size, so the grid
+    has no gap at its own longitude seam (found 2026-11-10: a visible
+    discontinuity in every NATL ensemble panel, since NATL's extent, -110 to
+    40, straddles 0 deg - the edge where this LON_RANGE=(0, 360) grid's last
+    bin, centred ~358.5, and first bin, centred ~1.5, meet but don't connect).
+    Any domain whose plotted window crosses the grid's longitude seam -
+    wherever that seam is for the LON_RANGE in use - needs this, not just
+    NATL: this grid's seam happens to sit at 0/360 (Greenwich) because
+    LON_RANGE is (0, 360); moving LON_RANGE to (-180, 180) only relocates the
+    same seam to the dateline, it doesn't remove it (that's exactly the
+    earlier dateline bug this project already hit once).
+    """
+    data, new_lon = add_cyclic_point(da.values, coord=da["lon"].values, axis=da.dims.index("lon"))
+    coords = {d: da.coords[d] for d in da.dims if d != "lon"}
+    coords["lon"] = new_lon
+    return xr.DataArray(data, dims=da.dims, coords=coords, name=da.name)
 
 
 def experiment_panels(experiment, years, domain_name):
@@ -130,8 +159,8 @@ def plot_domain_ensemble(domain_name, domain, experiments, years):
             [panels.get(title, xr.zeros_like(panels["Full track"])) for panels in members.values()],
             dim="experiment",
         )
-        ens_mean[title] = stacked.mean(dim="experiment")
-        ens_spread[title] = stacked.std(dim="experiment", ddof=1) if n_members > 1 else None
+        ens_mean[title] = add_lon_cyclic(stacked.mean(dim="experiment"))
+        ens_spread[title] = add_lon_cyclic(stacked.std(dim="experiment", ddof=1)) if n_members > 1 else None
 
     vmax = max(float(D.max()) for D in ens_mean.values())
     if vmax <= 0:

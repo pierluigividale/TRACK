@@ -89,11 +89,11 @@ winds = True
 # addwind doesn't need it fixed immediately - so just select the hours this
 # field actually has instead of erroring. ec100's EERIE conversion hit the
 # identical pattern (found 2026-10-22 from its first real test job,
-# 61572175) - same fix applies. dz876 not yet checked; verify its wspeed
-# hours the same way before assuming 0,6,12,18 works for it. Revisit
+# 61572175) - same fix applies. dz876 checked 2026-11-12 from raw pc1961jan:
+# 124 steps, all on 03/09/15/21 - same fix applies. Revisit
 # alongside the ap9-hourly-derived-windspeed plan noted in memory once
 # that's scheduled.
-WSPEED_SELHOUR = {"dd828": "3,9,15,21", "dc009": "3,9,15,21", "ec100": "3,9,15,21"}.get(name, "0,6,12,18")
+WSPEED_SELHOUR = {"dd828": "3,9,15,21", "dc009": "3,9,15,21", "ec100": "3,9,15,21", "dz876": "3,9,15,21"}.get(name, "0,6,12,18")
 
 # Fast-path skip for months that are genuinely fully done: both regrids
 # already produced, and geo/mslp/wspeed already at a 6-hourly-or-coarser

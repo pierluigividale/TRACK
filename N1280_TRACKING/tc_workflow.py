@@ -13,8 +13,16 @@ Per (experiment, year, hemisphere) the pipeline is:
 decides the minimal fix per incomplete (experiment, year, hemisphere) and
 only acts with --yes; otherwise it just prints the sbatch calls it would run.
 
+EERIE runs (dz876/ec100) whose raw pp has been removed from disk need a
+`stage` step first, run on a sci node (NLDS rejects calls from LOTUS compute
+nodes - see eerie_nlds.py): it retrieves the missing raw files from NLDS into
+a staging area; `submit` refuses an EERIE year until all its raw files are on
+disk or staged+verified, and each convert job deletes its staged month after
+a successful conversion.
+
 Usage:
   python tc_workflow.py status [--experiments ch330,ck777] [--years 1984-1990] [--hemisphere NH]
+  python tc_workflow.py stage  [--experiments dz876] [--years 1958] [--yes] [--wait] [--budget-tb 10]
   python tc_workflow.py submit [--experiments ck777] [--years 1987] [--yes]
 """
 
@@ -22,7 +30,11 @@ import argparse
 import glob
 import os
 import re
+import shutil
 import subprocess
+import time
+
+import eerie_nlds as E
 
 HOME = "/home/users/plvidale/TRACK-1.5.2/"
 SCRIPTS_DIR = HOME + "scripts/"
@@ -73,23 +85,87 @@ TRUNC = "T63"
 # listing, which is also how a real one-month gap (Dec 1959, both pc and p8
 # streams) was caught - don't trust the raw directory listing for this pair
 # without re-checking file-level completeness, same lesson as dd828/dc009.
-#   dz876: real data Dec 1958 - Jul 1963, except Dec 1959 (missing) ->
-#          full NH years 1960-1962, full SH seasons 1960-1962 (1959 excluded
-#          by the Dec 1959 gap on both sides of the Jul-Jun boundary)
-#   ec100: real data Dec 1949 - Jan 1951, no gaps in that span -> only NH
-#          1950 is a full year; no SH season is complete yet
-# Both are still running - re-check for newly-completed years before
-# re-running `submit` next time, rather than assuming this range is final.
+#   (Dec 1959 later turned out to sit in the Nov cycle dir - handled by
+#   eerie_nlds.cycle_date - and dz876 Aug 1957 - Nov 1958 is on NLDS tape.)
+#
+# Both are ~100-year runs still being delivered from ARCHER2, so their year
+# range is NOT hand-set: years="auto" runs from "start" up to the last year
+# (NH: Jan-Dec) / season (SH: Jul-Jun) that is complete in the raw data
+# delivered so far, judged from the newest month whose p8+pc files are in
+# /gws/ssde/j25a/hiresgw/aosprey/u-<run>/ (eerie_nlds.latest_raw_month).
+# Older years whose pp has since been removed from disk are still listed -
+# `stage` gets them back from NLDS. `status` prints the latest month found.
 EXPERIMENTS = {
     "ch330": dict(source="n1280run", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
     "ck777": dict(source="n1280run", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
     "ck778": dict(source="n1280run", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
     "dd828": dict(source="plvidale", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
     "dc009": dict(source="torau", years={"NH": range(1980, 2015), "SH": range(1980, 2014)}),
-    "de443": dict(source="torau", years={"NH": range(1980, 1985), "SH": range(1980, 1985)}),
-    "dz876": dict(source="eerie", years={"NH": range(1950, 1964), "SH": range(1950, 1964)}),
-    "ec100": dict(source="eerie", years={"NH": range(1950, 1952)}),
+    "de443": dict(source="torau", years={"NH": range(1980, 1989), "SH": range(1980, 1988)}),
+    "dz876": dict(source="eerie", years={"NH": "auto", "SH": "auto"}, start={"NH": 1958, "SH": 1958}),
+    "ec100": dict(source="eerie", years={"NH": "auto", "SH": "auto"}, start={"NH": 1950, "SH": 1950}),
 }
+
+_latest_raw_cache = {}
+
+
+def latest_raw_month(run):
+    if run not in _latest_raw_cache:
+        _latest_raw_cache[run] = E.latest_raw_month(run)
+    return _latest_raw_cache[run]
+
+
+def last_complete_year(run, hemi):
+    """Last NH year (needs Dec) / SH season (Jul Y - Jun Y+1, needs Jun Y+1)
+    fully present in the raw data delivered so far; None if no data."""
+    latest = latest_raw_month(run)
+    if latest is None:
+        return None
+    ly, lm = latest
+    if hemi == "NH":
+        return ly if lm == 12 else ly - 1
+    return ly - 1 if lm >= 6 else ly - 2
+
+
+def experiment_years(run, hemi):
+    """Years to consider for (run, hemi): the fixed range, or for years="auto"
+    start .. last_complete_year."""
+    spec = EXPERIMENTS[run]
+    years = spec["years"].get(hemi)
+    if years is None:
+        return range(0)
+    if years != "auto":
+        return years
+    last = last_complete_year(run, hemi)
+    return range(spec["start"][hemi], last + 1) if last is not None else range(0)
+
+
+def describe_auto_ranges(experiments, hemispheres, years_filter):
+    """One line per auto-range experiment, plus a note for any explicitly
+    requested year outside its range (otherwise it would silently vanish)."""
+    for run in experiments:
+        spec = EXPERIMENTS[run]
+        if "auto" not in spec["years"].values():
+            continue
+        latest = latest_raw_month(run)
+        if latest is None:
+            print("%s: WARNING no complete raw month found in %su-%s/ - no years listed"
+                  % (run, E.RAW_ROOT, run))
+            continue
+        parts = []
+        for hemi in hemispheres:
+            if spec["years"].get(hemi) != "auto":
+                continue
+            yrs = experiment_years(run, hemi)
+            parts.append("%s %s" % (hemi, "%d-%d" % (yrs[0], yrs[-1]) if len(yrs) else "none complete yet"))
+            if years_filter:
+                for y in sorted(years_filter):
+                    if y in yrs:
+                        continue
+                    why = ("before the configured start (%d)" % spec["start"][hemi]
+                           if y < spec["start"][hemi] else "not complete on disk yet (ARCHER2 still running)")
+                    print("NOTE %s %s %d: %s - not listed" % (run, hemi, y, why))
+        print("%s: latest raw month delivered %d-%02d -> %s" % (run, latest[0], latest[1], ", ".join(parts)))
 
 # Experiments whose conversion step goes through pp_to_nc_iris_WCSI_EERIE.py
 # instead of pp_to_nc_iris_WCSI.py - SLURMscript_n1280_para_WCSI dispatches
@@ -236,11 +312,10 @@ def audit(experiments, years_filter, hemispheres):
     running_precise, running_year_fallback = running_jobs()
     rows = []
     for run in experiments:
-        spec = EXPERIMENTS[run]
-        for hemi, hemi_years in spec["years"].items():
+        for hemi in ("NH", "SH"):
             if hemi not in hemispheres:
                 continue
-            for year in hemi_years:
+            for year in experiment_years(run, hemi):
                 if years_filter is not None and year not in years_filter:
                     continue
                 conv = convert_done(run, year, hemi)
@@ -315,7 +390,28 @@ def sbatch(args, dry_run):
     return match.group(1) if match else None
 
 
+def eerie_missing_raw(run, year, hemi):
+    """[(year, month, stream, original_path)] raw files this EERIE
+    (run, year, hemi) still needs that are neither on disk nor staged and
+    verified - i.e. what `stage` still has to retrieve before `submit`."""
+    missing = []
+    for m_year, month in months_for(hemi, year):
+        for stream, path in E.needed_streams(run, m_year, month).items():
+            if E.locate(run, m_year, month, path) is None:
+                missing.append((m_year, month, stream, path))
+    return missing
+
+
 def submit_convert_and_track(run, year, hemi, dry_run):
+    if run in EERIE_EXPERIMENTS:
+        # convert jobs can't reach NLDS (403 from LOTUS compute nodes), so
+        # every raw file must already be on disk or staged before submitting
+        missing = eerie_missing_raw(run, year, hemi)
+        if missing:
+            print("SKIP %s %s %s: %d raw file(s) not on disk or staged yet "
+                  "(first: %s) - run `stage` for it first"
+                  % (run, year, hemi, len(missing), missing[0][3]))
+            return
     convert_name = "%s_convert_%s" % (run, year)
     # EERIE's raw monthly files are much larger (one pc-stream month is
     # ~100GB, several times the other experiments') - bump the conversion
@@ -377,6 +473,144 @@ def submit(rows, dry_run):
 
 
 # ---------------------------------------------------------------------------
+# Stage (EERIE only): retrieve off-disk raw pp from NLDS - run on a sci node
+# ---------------------------------------------------------------------------
+def stage(rows, dry_run, wait, budget_tb, poll_seconds=120):
+    """For every EERIE (run, year, hemi) that needs converting, make sure each
+    raw pp file its months still need is available: on disk, or staged in
+    eerie_nlds.STAGING_ROOT and verified. Missing ones are requested from
+    NLDS (non-blocking) within a staging-space budget; with --wait, blocks
+    until they arrive, verifies sizes and writes the .complete markers that
+    the convert jobs and `submit` require. Safe to re-run at any time: in-
+    flight GETs are recognised by their deterministic job label, and a GET
+    that finished while nobody was waiting is verified on the next run.
+    """
+    todo = [r for r in rows if r[0] in EERIE_EXPERIMENTS and r[-1] == "needs_convert"]
+    if not todo:
+        print("Nothing to stage (no EERIE year needs converting).")
+        return
+
+    # unique (run, y, m, stream) -> original path; NH/SH overlap dedupes here
+    wanted = {}
+    for run, year, hemi, *_ in todo:
+        for m_year, month in months_for(hemi, year):
+            for stream, path in E.needed_streams(run, m_year, month).items():
+                wanted[(run, m_year, month, stream)] = path
+
+    pending, to_get, unarchived = {}, [], []
+    n_disk = n_staged = 0
+    for key in sorted(wanted):
+        run, y, m, stream = key
+        path = wanted[key]
+        if os.path.exists(path):
+            n_disk += 1
+            continue
+        if E.is_staged(run, y, m, path):
+            n_staged += 1
+            continue
+        label = E.job_label(run, y, m, stream)
+        state = E.latest_state(label)
+        if state is not None and state not in E.NLDS_TERMINAL_STATES:
+            pending[key] = label            # already in flight
+            continue
+        found = E.nlds_find(path)
+        if found is None:
+            unarchived.append(path)
+            continue
+        holding_id, size, storage = found
+        sp = E.staged_path(run, y, m, path)
+        if os.path.exists(sp) and os.path.getsize(sp) == size:
+            # a staged copy at its final name with exactly the catalogue size
+            # is accepted whatever NLDS's own state says (e.g. finished since
+            # the last `stage` run) - never re-fetch a good file
+            if not dry_run:
+                with open(sp + ".complete", "w") as f:
+                    f.write("%d\n" % size)
+            n_staged += 1
+            continue
+        to_get.append((key, path, holding_id, size, storage))
+
+    print("\nraw files needed: %d on disk, %d already staged, %d in flight, "
+          "%d to retrieve, %d not archived anywhere"
+          % (n_disk, n_staged, len(pending), len(to_get), len(unarchived)))
+    for p in unarchived:
+        print("  NOT IN NLDS (and not on disk): %s" % p)
+
+    # space budget: what's already in staging (incl. partial in-flight files)
+    # plus new requests must stay under --budget-tb, and the GWS must keep
+    # STAGING_MIN_FREE_BYTES free
+    used = E.staging_usage_bytes()
+    free = shutil.disk_usage(E.STAGING_ROOT).free
+    budget = budget_tb * 1e12
+    print("staging area: %.2f TB used, budget %.1f TB; GWS free %.1f TB"
+          % (used / 1e12, budget_tb, free / 1e12))
+    committed = 0
+    deferred = 0
+    for key, path, holding_id, size, storage in to_get:
+        run, y, m, stream = key
+        target = E.staging_target_dir(run, y, m, path)
+        stale = E.staging_usage_bytes(target)   # leftover partial - cleared by nlds_get
+        if (used - stale + committed + size > budget
+                or free + stale - committed - size < E.STAGING_MIN_FREE_BYTES):
+            deferred += 1
+            continue
+        label = E.job_label(run, y, m, stream)
+        print("GET %s (%.0f GB, holding %s, %s)" % (path, size / 1e9, holding_id, "/".join(storage)))
+        committed += size - stale
+        if dry_run:
+            continue
+        E.nlds_get(path, holding_id, target, label)
+        pending[key] = label
+    if deferred:
+        print("%d file(s) deferred by the staging budget - re-run `stage` once "
+              "convert jobs have consumed (and deleted) staged months" % deferred)
+    if dry_run:
+        print("\n(dry run - pass --yes to actually submit these NLDS GETs)")
+        return
+    if not wait or not pending:
+        if pending:
+            print("\n%d GET(s) in flight - re-run `stage` (or add --wait) to "
+                  "verify them before `submit`." % len(pending))
+        return
+
+    # --wait: poll until every pending GET is terminal; verify + mark
+    print("\nwaiting for %d GET(s) (poll every %ds)..." % (len(pending), poll_seconds))
+    retried = set()
+    failed = []
+    while pending:
+        time.sleep(poll_seconds)
+        for key, label in list(pending.items()):
+            run, y, m, stream = key
+            path = wanted[key]
+            state = E.latest_state(label)
+            if state not in E.NLDS_TERMINAL_STATES:
+                continue
+            sp = E.staged_path(run, y, m, path)
+            found = E.nlds_find(path)
+            size = found[1] if found else -1
+            if os.path.exists(sp) and os.path.getsize(sp) == size:
+                with open(sp + ".complete", "w") as f:
+                    f.write("%d\n" % size)
+                print("%s staged OK (%s): %s" % (time.strftime("%H:%M:%S"), state, sp))
+                del pending[key]
+            elif key not in retried and found:
+                print("%s %s ended %s - retrying once:\n%s"
+                      % (time.strftime("%H:%M:%S"), label, state, E.errors_for(label)))
+                retried.add(key)
+                E.nlds_get(path, found[0], E.staging_target_dir(run, y, m, path), label)
+            else:
+                print("%s %s FAILED for good (%s):\n%s"
+                      % (time.strftime("%H:%M:%S"), label, state, E.errors_for(label)))
+                failed.append(path)
+                del pending[key]
+    if failed:
+        print("\nstaging finished with %d failure(s) - `submit` will skip the "
+              "affected years until they are staged." % len(failed))
+    else:
+        print("\nstaging finished - now run `submit` for these years.")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def parse_years(spec):
@@ -394,11 +628,14 @@ def parse_years(spec):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["status", "submit"])
+    parser.add_argument("command", choices=["status", "stage", "submit"])
     parser.add_argument("--experiments", help="comma-separated, default all: " + ",".join(EXPERIMENTS))
     parser.add_argument("--years", help="e.g. 1984-1990,2000")
     parser.add_argument("--hemisphere", help="NH,SH (default both)")
-    parser.add_argument("--yes", action="store_true", help="submit: actually run sbatch (default: dry run)")
+    parser.add_argument("--yes", action="store_true", help="submit/stage: actually act (default: dry run)")
+    parser.add_argument("--wait", action="store_true", help="stage: block until the NLDS GETs finish and verify them")
+    parser.add_argument("--budget-tb", type=float, default=10.0,
+                        help="stage: max TB in the NLDS staging area (default 10; one EERIE month ~0.45 TB)")
     args = parser.parse_args()
 
     experiments = args.experiments.split(",") if args.experiments else list(EXPERIMENTS)
@@ -408,12 +645,16 @@ def main():
     years_filter = parse_years(args.years)
     hemispheres = args.hemisphere.split(",") if args.hemisphere else ["NH", "SH"]
 
+    describe_auto_ranges(experiments, hemispheres, years_filter)
     rows = audit(experiments, years_filter, hemispheres)
     print_status(rows)
 
     if args.command == "submit":
         print()
         submit(rows, dry_run=not args.yes)
+    elif args.command == "stage":
+        print()
+        stage(rows, dry_run=not args.yes, wait=args.wait, budget_tb=args.budget_tb)
 
 
 if __name__ == "__main__":

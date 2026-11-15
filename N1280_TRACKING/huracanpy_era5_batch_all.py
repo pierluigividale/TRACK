@@ -113,6 +113,8 @@ def process_domain(tracks, apex, domain_name, domain):
 
     tc_tracks = candidates.hrcn.sel_id(tc_track_ids)
     tc_tracks = filter_genesis_latitude(tc_tracks, TC_GENESIS_THRESHOLD_LATITUDE)
+    if tc_tracks is None:
+        return summary, None
     year_per_record = np.array([years[tid] for tid in tc_tracks.track_id.values])
     tc_tracks = tc_tracks.assign(year=("record", year_per_record))
 
@@ -129,12 +131,22 @@ def parse_args():
         "--gap-basins", action="store_true",
         help="process only the AUS/CP basins no domain covers (GAP_BASINS), for merging later",
     )
+    parser.add_argument(
+        "--years", default=None,
+        help="START-END (inclusive), e.g. 2014-2014 to add just one more year - "
+             "default is the module-level YEARS (1980-2013); the source file itself "
+             "covers 1940-2024 if you want to go further",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     name, out_dir = args.name, args.out_dir
+    years = YEARS
+    if args.years:
+        first, last = (int(x) for x in args.years.split("-"))
+        years = range(first, last + 1)
     print(f"Loading {args.input} ...")
     tracks = load_era5(args.input)
     apex = tracks.hrcn.get_apex_vals("vorticity")
@@ -149,7 +161,7 @@ def main():
             print(f"[{name} {domain_name}] no tracks in basin {domain['basin']!r}, skipping")
             continue
 
-        for year in YEARS:
+        for year in years:
             tag = f"{name}_{year}_{domain_name}"
             year_summary = summary[summary.year == year].drop(columns="year")
             year_summary.to_parquet(os.path.join(out_dir, f"{tag}_summary.parquet"))

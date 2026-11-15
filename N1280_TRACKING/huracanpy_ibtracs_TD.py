@@ -13,6 +13,8 @@ model version has to.
 import numpy as np
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
+import xarray as xr
+from cartopy.util import add_cyclic_point
 from matplotlib.colors import LogNorm
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MultipleLocator
@@ -20,6 +22,20 @@ from matplotlib.ticker import MultipleLocator
 import huracanpy
 
 from huracanpy_ibtracs_batch_all import DOMAINS, IBTRACS_FILE, NATURE_MARKERS, YEARS, load_ibtracs
+
+
+def add_lon_cyclic(da):
+    """Append a copy of the first lon column at lon.max()+bin_size, so the
+    grid has no gap at its own longitude seam - found 2026-11-10 via a visible
+    discontinuity in NATL's density panels (same bug, huracanpy_TD_ensemble.py),
+    since density()'s default lon_range sits at a fixed grid whose two edges
+    (wherever they are) meet but don't connect, and NATL's extent (-110 to 40)
+    straddles that seam at 0 deg.
+    """
+    data, new_lon = add_cyclic_point(da.values, coord=da["lon"].values, axis=da.dims.index("lon"))
+    coords = {d: da.coords[d] for d in da.dims if d != "lon"}
+    coords["lon"] = new_lon
+    return xr.DataArray(data, dims=da.dims, coords=coords, name=da.name)
 
 BIN_SIZE = 3  # degrees - matches huracanpy_TD.ipynb, for visual comparability
 GRID_SPACING = 10  # degrees - lon/lat gridline interval
@@ -50,9 +66,10 @@ def plot_domain_density(domain_name, domain, all_tracks, years):
         sub = sel if mask is None else sel[mask]
         if sub.empty:
             return None
-        return huracanpy.calc.density(
+        d = huracanpy.calc.density(
             sub.lon, sub.lat, method="histogram", bin_size=BIN_SIZE, spherical=False
         )
+        return add_lon_cyclic(d)
 
     NATURE_PANELS = [("Full track", subset_density())] + [
         (code, subset_density((sel.nature == code).values))

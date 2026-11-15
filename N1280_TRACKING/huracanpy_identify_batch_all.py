@@ -1,5 +1,13 @@
 """General batch version of HuracanPy_Identify.ipynb.
 
+*** NOT the method-6 identification - do not run this for new data. ***
+TC identification is now huracanpy_identify_method6.py. This file is kept
+because huracanpy_TD_ensemble.py, huracanpy_TC_interannual.py,
+huracanpy_era5_batch_all.py and others import shared definitions from it
+(DOMAINS, BASE_DIR, helpers). Running it as a script needs the OLD wcsi 1.x
+(it calls wcsi.nature.wcsi); with wcsi >= 2 it fails with
+"'function' object has no attribute 'wcsi'".
+
 For each experiment/year and each configured basin (see DOMAINS below), loads
 the matching tr_trs_pos*.nc (northern-hemisphere basins) or tr_trs_neg*.nc
 (southern-hemisphere basins) tracks from
@@ -32,12 +40,14 @@ matplotlib.use("Agg")  # no interactive display in batch mode
 # Configuration - edit before each run
 # ---------------------------------------------------------------------------
 BASE_DIR = "/Users/vidale/Python_scripts/TC-TRACKS"
-#EXPERIMENTS = ["u-dd828"]
-EXPERIMENTS = ["u-dc009"]
+EXPERIMENTS = ["u-dd828", "u-dc009", "u-ck777", "u-ck778", "u-ch330"]
+#EXPERIMENTS = ["u-dc009"]
+#EXPERIMENTS = ["u-ck777"]
+#EXPERIMENTS = ["u-ck778"]
 #EXPERIMENTS = ["u-ch330"]
 #EXPERIMENTS = ["u-dz876"]
 #YEARS = range(2000, 2001)  # 1980 to 2000 inclusive
-YEARS = range(1980, 1981)
+YEARS = range(1980, 2014)
 
 # One entry per domain to process. "basin" is the WMO-TC convention code used
 # by huracanpy/wcsi (see huracanpy._basins.NH/SH) to restrict tracks to those
@@ -59,11 +69,11 @@ DOMAINS = {
         title="Northwest Pacific",
     ),
     "SPAC": dict(
-            basin="SP", hemisphere="S", extent=[140, 245, -65, 5],
+            basin="SP", hemisphere="S", extent=[130, 245, -65, 5],
             title="South Pacific",
         ),  
     "EPAC": dict(
-        basin="ENP", hemisphere="N", extent=[-160, -65, -5, 40],
+        basin="ENP", hemisphere="N", extent=[-185, -65, -5, 40],
         title="East Pacific",
     ),
     "NIO": dict(
@@ -79,6 +89,31 @@ DOMAINS = {
         title="South Atlantic",
     ),
 }
+
+# huracanpy's WMO-TC convention also has two basins no domain above uses:
+# AUS (Southern Hemisphere 90-160E) and CP (Northern Hemisphere 180-140W).
+# Storms peaking there are dropped by the per-basin identification, whereas
+# IBTrACS counts them in its own SI (west of 135E), SP (east of 135E) and EP
+# basins. They are identified separately with these entries
+# (huracanpy_add_gap_basins.py) and merged into SIO/SPAC/EPAC afterwards, so
+# the domains match IBTrACS's.
+GAP_BASINS = {
+    "AUS": dict(basin="AUS", hemisphere="S", extent=[85, 165, -45, 5], title="Australian region"),
+    "CP": dict(basin="CP", hemisphere="N", extent=[175, 225, -5, 45], title="Central Pacific"),
+}
+AUS_SPLIT_LON = 135  # degrees E - IBTrACS's SI/SP boundary
+
+
+def gap_basin_domain(basin, apex_lon):
+    """Domain a storm peaking in a GAP_BASINS basin is merged into, as IBTrACS
+    would count it: CP -> EPAC; AUS -> SIO west of AUS_SPLIT_LON, else SPAC
+    (by the longitude of its peak). None for any other basin.
+    """
+    if basin == "CP":
+        return "EPAC"
+    if basin == "AUS":
+        return "SIO" if apex_lon % 360 < AUS_SPLIT_LON else "SPAC"
+    return None
 
 #SKIP_DOMAINS = {"MED", "NATL", "NWPAC", "SPAC", "EPAC", "NIO"}  # too sparse to be useful yet - storms in only 1-2 of 34 years
 SKIP_DOMAINS = {}  # too sparse to be useful yet - storms in only 1-2 of 34 years
@@ -140,7 +175,9 @@ def filter_genesis_latitude(tracks, threshold_latitude):
         track_id=np.abs(tc_genesis_points.lat) < threshold_latitude
     )
     # Return the subset of tracks that have the first TC point poleward of the threshold
-    # latitude
+    # latitude - or None if no track survives (sel_id cannot select nothing)
+    if tc_genesis_points_valid.sizes["track_id"] == 0:
+        return None
     return tracks.hrcn.sel_id(tc_genesis_points_valid.track_id)
 
 def infer_npoints(tracks, hours):
@@ -412,7 +449,8 @@ def process_domain_year(experiment, year, domain_name, domain):
         if wcsi_tracks is not None:
             wcsi_tracks = compute_nature(wcsi_tracks, FILTER_SIZE)
             wcsi_tracks = filter_genesis_latitude(wcsi_tracks, TC_GENESIS_THRESHOLD_LATITUDE)
-            huracanpy.save(wcsi_tracks, out_nc)
+            if wcsi_tracks is not None:
+                huracanpy.save(wcsi_tracks, out_nc)
         summary.to_parquet(out_parquet)
 
     # summary only ever holds tracks from this (experiment, year) file, so no

@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --partition=standard
+#SBATCH --account=hrcm
+#SBATCH --qos=standard
+#SBATCH -o /work/scratch-pw4/plvidale/slurm_logs/%j.out
+#SBATCH -e /work/scratch-pw4/plvidale/slurm_logs/%j.err
+#SBATCH --time=12:00:00
+#SBATCH --mem=64000 # Set the amount of memory for the job in MB. tc_workflow.py
+                     # overrides this with --mem= on the sbatch command line
+                     # for the EERIE experiments (dz876/ec100), whose raw
+                     # files are much larger - keep EERIE_EXPERIMENTS there
+                     # in sync with the case below.
+
+# executable
+module add jaspy
+mkdir -p /work/scratch-pw4/plvidale/u-$1
+cd /work/scratch-pw4/plvidale/u-$1 || exit 1
+
+# Per-month lock for EERIE runs (added 2026-11-12). NH and SH convert jobs
+# overlap by 6 months; for EERIE the raw pp may only exist as a staged NLDS
+# copy that the first successful job deletes, so the second job for the same
+# month must wait for the first to finish (conversion AND ll_to_gg) and then
+# simply find the outputs present and skip. mkdir is atomic, so it's the lock.
+# A lock whose owner job is no longer known to SLURM is stale and is broken.
+acquire_month_lock() {
+    lock=/work/scratch-pw4/plvidale/u-$1/.convert_lock_$2$(printf %02d $3)
+    while ! mkdir $lock 2>/dev/null; do
+        owner=$(cat $lock/job 2>/dev/null)
+        if [ -n "$owner" ]; then
+            q=$(squeue -h -j $owner -o %T 2>&1)
+            if [ $? -eq 0 ] && [ -z "$q" ] || echo "$q" | grep -q "Invalid job id"; then
+                echo "breaking stale lock $lock (owner job $owner no longer running)"
+                rm -rf $lock
+                continue
+            fi
+        fi
+        echo "$(date +%T) month $2-$3 locked by job ${owner:-?} - waiting"
+        sleep 120
+    done
+    echo $SLURM_JOB_ID > $lock/job
+    trap "rm -rf $lock" EXIT
+}
+
+# dz876/ec100 (coupled atmosphere-ocean, EERIE project) use a different raw
+# archive convention (per-month cycle directories, different streams) - see
+# pp_to_nc_iris_WCSI_EERIE.py. Everything else uses the standard script.
+# `|| exit 1`: a failed conversion must fail the job (it used to fall
+# through to ll_to_gg and end as COMPLETED, e.g. job 381850).
+case $1 in
+    dz876|ec100)
+        acquire_month_lock $1 $2 $3
+        python /home/users/plvidale/TRACK-1.5.2/scripts/pp_to_nc_iris_WCSI_EERIE.py $1 $2 $3 || exit 1
+        ;;
+    *)
+        python /home/users/plvidale/TRACK-1.5.2/scripts/pp_to_nc_iris_WCSI.py $1 $2 $3 || exit 1
+        ;;
+esac
+python /home/users/plvidale/TRACK-1.5.2/scripts/ll_to_gg_n1280.py $1 $2 $3

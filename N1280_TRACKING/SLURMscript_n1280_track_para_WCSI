@@ -1,0 +1,18 @@
+#!/bin/bash 
+#SBATCH --partition=standard
+#SBATCH --account=hrcm
+#SBATCH --qos=standard
+#SBATCH -o /work/scratch-pw4/plvidale/slurm_logs/%j.out 
+#SBATCH -e /work/scratch-pw4/plvidale/slurm_logs/%j.err
+#SBATCH --time=12:00:00
+
+# executable
+module add jaspy
+# .bash_profile normally puts "." on PATH (needed for TRACK's own master/
+# config.RUN, invoked by bare name from within TRACK-1.5.2/) - sbatch's batch
+# shell doesn't source .bash_profile, so without this master fails with
+# "command not found" the first time a year genuinely needs master to run
+# (i.e. isn't just reusing an already-tracked year's cached output).
+export PATH="$PATH:."
+echo $1 $2 $3 $4 $5 $6 $7 $8 $9 ${10}
+python track_n1280_para_WCSI.py $1 $2 $3 $4 $5 $6 $7 $8 $9 ${10}

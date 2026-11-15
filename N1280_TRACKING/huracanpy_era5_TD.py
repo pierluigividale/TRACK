@@ -18,11 +18,26 @@ import huracanpy
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
+from cartopy.util import add_cyclic_point
 from matplotlib.colors import LogNorm
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MultipleLocator
 
 from huracanpy_identify_batch_all import BASE_DIR, DOMAINS
+
+
+def add_lon_cyclic(da):
+    """Append a copy of the first lon column at lon.max()+bin_size, so the
+    grid has no gap at its own longitude seam - found 2026-11-10 via a visible
+    discontinuity in NATL's density panels (same bug, huracanpy_TD_ensemble.py),
+    since density()'s default lon_range sits at a fixed grid whose two edges
+    (wherever they are) meet but don't connect, and NATL's extent (-110 to 40)
+    straddles that seam at 0 deg.
+    """
+    data, new_lon = add_cyclic_point(da.values, coord=da["lon"].values, axis=da.dims.index("lon"))
+    coords = {d: da.coords[d] for d in da.dims if d != "lon"}
+    coords["lon"] = new_lon
+    return xr.DataArray(data, dims=da.dims, coords=coords, name=da.name)
 
 EXPERIMENT = "ERA5"
 YEARS = range(1980, 2014)  # matches huracanpy_era5_batch_all.py's default
@@ -67,7 +82,8 @@ def plot_domain_density(domain_name, domain, experiment, years):
         if lon_sub.sizes.get("record", 0) == 0:
             return None
         lat_sub = lat_all if mask is None else lat_all.isel(record=mask)
-        return huracanpy.calc.density(lon_sub, lat_sub, method="histogram", bin_size=3, spherical=False)
+        d = huracanpy.calc.density(lon_sub, lat_sub, method="histogram", bin_size=3, spherical=False)
+        return add_lon_cyclic(d)
 
     NATURE_PANELS = [
         ("Full track", subset_density()),
