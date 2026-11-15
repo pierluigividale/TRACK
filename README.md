@@ -18,6 +18,45 @@ docstring; this README tells you which script to open.
 
 **Please note**: all scripts described here are contained in the N1280_TRACKING subdirectory on this repository. You can either copy them from PLV's home directory on JASMIN, under `/home/users/plvidale/TRACK-1.5.2/scripts`, or else download them from N1280_TRACKING on this repository.
 
+## Quick start: TC identification on TRACK output you already have
+
+If you already have TRACK output with the Hart parameters added (the
+`tr_trs_pos*.hart.new.nc` / `tr_trs_neg*.hart.new.nc` files), you only need
+two scripts, which work on a laptop or on JASMIN:
+
+```
+pip install --upgrade git+https://github.com/Huracan-project/wcsi   # wcsi >= 2 required
+pip install huracanpy parse pyarrow cartopy
+
+# 1. method-6 TC identification -> {experiment}_{year}_{domain}_TCs.nc + _summary.parquet
+python huracanpy_identify_method6.py --experiments <exp ...> --years 1990-2014 \
+    --data-dir <folder holding the TRACK output> --out-dir <output folder> \
+    --input-nh "<NH file pattern, with {experiment} and {year}>" \
+    --input-sh "<SH file pattern; SH year Y = July Y - June Y+1>" \
+    --warm-core-level <top vorticity level in the files, hPa>
+
+# 2. a PNG map and a CSV of the tracks (Hart parameters, WCSI nature) per year and domain
+python huracanpy_method6_maps_csv.py <output folder>
+```
+
+Worked example - Kevin Hodges' DestinE IFS-NEMO2 tracks on JASMIN (MSLP field
+`psl`, vorticity up to 200 hPa):
+
+```
+python huracanpy_identify_method6.py --experiments hist cont --years 1990-2014 \
+    --data-dir /gws/ssde/j25b/cmip6_track/DESTINe/IFS-NEMO2 --out-dir <output folder> \
+    --warm-core-level 200 \
+    --input-nh "{experiment}/TC/NH/IFS-NEMO_{experiment}_VOR_vertavg_{year}_T63/tr_trs_pos*.hart.new.nc" \
+    --input-sh "{experiment}/TC/SH/IFS-NEMO_{experiment}_VOR_vertavg_jul-jun{year}*_T63/tr_trs_neg*.hart.new.nc"
+```
+
+Check the first line printed for each file: it names the variable used as the
+MSLP-minimum position (detected automatically) and the percentage of points
+with no MSLP minimum - typically 20-35%; 0% means the wrong variable. Years
+already present in the output folder are skipped - use `--overwrite` or a new
+`--out-dir` after changing anything. Do **not** use the older
+`huracanpy_identify_batch_all.py` for identification (see Part 3).
+
 ## Two environments
 
 The pipeline spans two places that don't share a filesystem:
@@ -114,8 +153,31 @@ wrapper script can exit 0 even after the Python step inside it crashed).
 
 ```
 python tc_workflow.py status [--experiments ...] [--years ...] [--hemisphere NH|SH]
+python tc_workflow.py stage  [--experiments ...] [--years ...] [--yes] [--wait]   # EERIE only, sci node
 python tc_workflow.py submit [--experiments ...] [--years ...] [--hemisphere NH|SH] [--yes]
 ```
+
+It submits one conversion job per month (`SLURMscript_n1280_para_WCSI`) and
+a tracking job per year (`SLURMscript_n1280_track_para_WCSI`) that waits for
+them.
+
+**EERIE runs (dz876, ec100) - tape retrieval and automatic year ranges.**
+These ~100-year coupled runs are still being delivered from ARCHER2, and their
+raw pp files are removed from disk on a rolling basis once archived to
+JASMIN's NLDS tape store. Two consequences:
+
+- `stage` retrieves whatever raw files a year needs from NLDS into a staging
+  area, verifies them and marks them complete; `submit` refuses an EERIE year
+  until every raw file is on disk or staged. NLDS rejects requests from LOTUS
+  compute nodes (HTTP 403), so `stage` must be run interactively on a sci
+  node (`sci-vm-0x`); the conversion jobs never call NLDS themselves.
+  NLDS helpers are in `eerie_nlds.py`.
+- Their year range is not hand-set (`years="auto"` in `EXPERIMENTS`): it runs
+  from a fixed start year up to the last complete NH year (needs December) /
+  SH season (July-June, needs June) in the raw data delivered so far,
+  judged from the newest month whose files are in
+  `/gws/ssde/j25a/hiresgw/aosprey/u-<run>/`. `status` prints the latest month
+  found; just re-run `status` and `submit` as ARCHER2 delivers more.
 
 `status` is read-only and reports, per (experiment, year, hemisphere),
 whether conversion, vorticity filtering and final tracking actually
@@ -154,34 +216,46 @@ the layout JASMIN itself uses - `rsync`ing `VOR_*` straight into
 ## Part 3 - TC identification
 
 TRACK finds vortices; a separate identification step decides which of them
-are tropical cyclones. Several identification approaches exist (see
-`huracanpy_compare_4_methods.py`'s docstring for all six) - the one
-currently recommended (suggested by Kevin Hodges and Leo Saffin) is
-**"WCSI warm core only"**: a closed-MSLP WCSI criterion with no minimum
-850 hPa vorticity threshold, selecting purely on the warm-core structure
-test (850-250 hPa vorticity decaying with height). This is "method 6" in
-`huracanpy_compare_4_methods.py` and the default settings in
-`huracanpy_identify_batch_method6.py`.
+are tropical cyclones. Several identification approaches were compared; the
+one adopted (suggested by Kevin Hodges and Leo Saffin) is **method 6, "WCSI
+warm core only"**:
 
-Two tools, for two different purposes:
+- Hart cyclone-phase-space warm-core/symmetric criteria (Leo Saffin's
+  [`wcsi`](https://github.com/Huracan-project/wcsi) package, version 2 or
+  later), with **no** minimum 850 hPa vorticity threshold;
+- a warm-core vorticity test: 850 hPa minus upper-level relative vorticity
+  greater than 6e-5 s-1 (tcident's 6.0). The upper level is the top level in
+  the TRACK files - 250 hPa for our N1280 runs, 200 hPa for the DestinE
+  IFS-NEMO2 runs (`--warm-core-level`);
+- the point must be over ocean and have a closed MSLP minimum (a cyclone,
+  not just a vortex);
+- all of the above for 24 consecutive hours, and the first TC point
+  equatorward of 50 degrees.
 
-- **`huracanpy_compare_4_methods.py --exp=u-<experiment> [first_year
-  last_year] [--sh] [--run=6]`** - runs one or more approaches on *one*
-  experiment and compares them (storm counts, genesis-latitude
-  distribution, overlap between approaches). Useful for sanity-checking a
-  newly-tracked experiment, or for deciding which approach to use in the
-  first place. Writes per-approach output under
-  `TC-TRACKS/TEST_<experiment>_<NH|SH>H/<approach>/` - a layout for
-  *comparing approaches on one experiment*, not for the ensemble scripts
-  below.
-- **`huracanpy_identify_batch_method6.py`** - bulk production, every
-  experiment in its `EXPERIMENTS` list, every year, both hemispheres,
-  method 6 only, writing every experiment's output into *one shared
-  directory* (`TC-TRACKS/METHOD6_ENSEMBLE_RUN/` by default) - this is the
-  layout Part 4's scripts expect: `{experiment}_{year}_{domain}_TCs.nc` /
-  `_summary.parquet` files for every experiment side by side. Add a new
-  experiment to `EXPERIMENTS` once it's tracked and `rsync`'d; the script
-  skips anything it's already processed.
+Each TC track is assigned to one ocean basin (where its vorticity peaks
+during the TC phase; Australian-region and Central Pacific storms are merged
+into SIO/SPAC and EPAC as IBTrACS counts them).
+
+**`huracanpy_identify_method6.py`** does all of this in one self-contained
+script (no imports from the other scripts here). Settings are at the top of
+the file and can all be overridden on the command line (`--help`; see the
+Quick start above for an example). It writes every experiment's output into
+one shared directory (`TC-TRACKS/METHOD6_ENSEMBLE_RUN/` by default):
+`{experiment}_{year}_{domain}_TCs.nc` (the TC tracks, with `is_tc` and the
+WCSI `nature` of every point) and `{experiment}_{year}_{domain}_summary.parquet`
+(one row per track) - the layout Part 4's scripts expect. Already-processed
+experiment/years are skipped unless `--overwrite` is given.
+
+**`huracanpy_method6_maps_csv.py <output folder>`** then writes, for each
+year and domain with at least one TC, a map (`_nature.png`: marker = WCSI
+nature, colour = MSLP) and a CSV of the track points (`_tracks.csv`: position,
+vorticity at every level, MSLP and 10 m wind, Hart B/VTL/VTU, `is_tc`,
+`nature`). It only reads the NetCDF output, so it is quick to re-run.
+
+`huracanpy_identify_batch_all.py` is the earlier identification script. It
+is kept only because the Part 4, ERA5 and IBTrACS scripts import shared
+definitions from it (basins, paths, helpers); running it needs the old wcsi
+1.x and fails with wcsi 2 ("'function' object has no attribute 'wcsi'").
 
 The ensemble/interannual/genesis scripts below also compare against ERA5
 and JRA3Q reanalysis "pseudo-tracks" (`ERA5_<year>_<domain>_TCs.nc` etc.,
@@ -238,10 +312,11 @@ experiment degrades gracefully rather than blocking the others.
 3. Add it to `tc_workflow.py`'s `EXPERIMENTS` dict (1.4) and run `status`,
    then `submit` (dry-run first) to track it on JASMIN.
 4. `rsync` the tracked output back (Part 2).
-5. Sanity-check it alone with `huracanpy_compare_4_methods.py --exp=...`
-   (Part 3) before trusting it in the ensemble.
-6. Add it to `huracanpy_identify_batch_method6.py`'s `EXPERIMENTS` and run
-   it to produce method-6 output in the shared ensemble directory.
+5. Sanity-check it alone (e.g. method-6 output with `--maps` for a few
+   years) before trusting it in the ensemble.
+6. Run `huracanpy_identify_method6.py --experiments u-<experiment>` to
+   produce its method-6 output in the shared ensemble directory (optionally
+   `huracanpy_method6_maps_csv.py` for maps and CSVs).
 7. Add it to the `EXPERIMENTS` list in all three Part 4 scripts and
    re-run them.
 
@@ -251,8 +326,12 @@ experiment degrades gracefully rather than blocking the others.
   for raw model output, and SLURM.
 - On JASMIN: `module add jaspy` (provides `iris`, `cdo`); TRACK-1.5.2's own
   compiled binaries (`master`, `config.RUN`, `utils/bin/{hart,tcident,...}`).
-- Locally: Python with `huracanpy`, `iris`, `cartopy`, `xarray`, `pandas`,
-  `scipy`; Leo Saffin's [`wcsi`](https://wcsi.readthedocs.io/) package (used
-  by `huracanpy_identify_batch_wcsi_new.py` for the closed-MSLP WCSI
-  identification, referenced via a local path near the top of that file -
-  point it at your own clone).
+- For identification and analysis (laptop or JASMIN): Python with
+  `huracanpy`, `xarray`, `pandas`, `pyarrow`, `parse`, `scipy`, `cartopy`, and
+  Leo Saffin's [`wcsi`](https://github.com/Huracan-project/wcsi) **version 2 or
+  later**: `pip install --upgrade git+https://github.com/Huracan-project/wcsi`.
+  `huracanpy_identify_method6.py` stops with an explicit message if the
+  installed wcsi is too old.
+- Default paths at the top of the scripts (`DATA_DIR`, `OUT_DIR`, `BASE_DIR`,
+  `IBTRACS_FILE`) point at PLV's machine - change them or use the
+  command-line options.
