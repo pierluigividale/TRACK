@@ -10,12 +10,23 @@ huracanpy_identify_method6.py, this script writes:
                     them at), Hart B / VTL / VTU, is_tc (WCSI TC criteria met
                     at that point) and nature (TC/BC/Tr/MV/Ot/Vo)
 
+With --combine, it instead joins all years of each experiment and domain
+(optionally limited by --years) and writes one set of files for the period:
+  {experiment}_{y0}-{y1}_{domain}_allTCs.nc   the joined tracks (huracanpy NetCDF)
+  {experiment}_{y0}-{y1}_{domain}_nature.png  all tracks of the period on one map
+  {experiment}_{y0}-{y1}_{domain}_tracks.csv  as above, plus a "year" column
+Track ids are renumbered year*1000000 + original id, so they stay unique
+across years (the original TRACK id is the last 6 digits). y0-y1 are the
+first and last years found; missing years in between are listed in the log.
+
 It reads the NetCDF files only - nothing is recomputed - so it is quick to
 re-run, and existing PNG/CSV files are skipped unless --overwrite.
 
 Usage:
   python huracanpy_method6_maps_csv.py TC-TRACKS/DESTINE_METHOD6_RUN
   python huracanpy_method6_maps_csv.py OUT_DIR --experiments hist --no-maps
+  python huracanpy_method6_maps_csv.py OUT_DIR --combine
+  python huracanpy_method6_maps_csv.py OUT_DIR --combine --years 1990-1999 --experiments hist
 """
 
 import argparse
@@ -26,6 +37,7 @@ import re
 import huracanpy
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 import huracanpy_identify_method6 as m6
 
@@ -62,20 +74,91 @@ def tracks_table(tracks):
     return df
 
 
+def combine_years(files_by_year):
+    """Join {year: path} into one record-dimension dataset with unique track ids."""
+    parts = []
+    for year, f in sorted(files_by_year.items()):
+        t = huracanpy.load(f)
+        t = t.drop_vars([v for v in t.variables if "record" not in t[v].dims and v not in t.dims
+                         and v != "pressure"])
+        t["track_id"] = t.track_id.astype("int64") + year * 1_000_000
+        t["year"] = ("record", np.full(t.sizes["record"], year, dtype="int32"))
+        parts.append(t)
+    return xr.concat(parts, dim="record", data_vars="minimal", coords="minimal", compat="override")
+
+
+def run_combined(args):
+    groups = {}  # (exp, domain) -> {year: path}
+    for f in sorted(glob.glob(os.path.join(args.out_dir, "*_TCs.nc"))):
+        mt = TC_FILE_RE.match(os.path.basename(f))
+        if not mt or (args.experiments and mt["exp"] not in args.experiments):
+            continue
+        year = int(mt["year"])
+        if args.years and year not in args.years:
+            continue
+        groups.setdefault((mt["exp"], mt["domain"]), {})[year] = f
+
+    n_png = n_csv = n_nc = 0
+    for (exp, dom), by_year in sorted(groups.items()):
+        years = sorted(by_year)
+        y0, y1 = years[0], years[-1]
+        stem = os.path.join(args.out_dir, f"{exp}_{y0}-{y1}_{dom}")
+        nc, png, csv = stem + "_allTCs.nc", stem + "_nature.png", stem + "_tracks.csv"
+        want_nc = args.overwrite or not os.path.exists(nc)
+        want_png = not args.no_maps and (args.overwrite or not os.path.exists(png))
+        want_csv = not args.no_csv and (args.overwrite or not os.path.exists(csv))
+        if not (want_nc or want_png or want_csv):
+            continue
+        tracks = combine_years(by_year)
+        n_tc = len(np.unique(tracks.track_id.values))
+        if want_nc:
+            huracanpy.save(tracks, nc)
+            n_nc += 1
+        if want_csv:
+            df = tracks_table(tracks)
+            df.insert(1, "year", tracks.year.values)
+            df.to_csv(csv, index=False, float_format="%.6g")
+            n_csv += 1
+        if want_png:
+            domain = m6.DOMAINS[dom]
+            m6.plot_domain_nature(
+                tracks, f"{domain['title']} tracks by nature, {exp} {y0}-{y1} "
+                        f"({n_tc} TCs in {len(years)} years)", png, domain["extent"])
+            n_png += 1
+        missing = sorted(set(range(y0, y1 + 1)) - set(years))
+        if args.years:
+            missing = [y for y in missing if y in args.years]
+        # a year with a summary but no _TCs.nc was processed and had zero TCs
+        zero = [y for y in missing if os.path.exists(os.path.join(args.out_dir, f"{exp}_{y}_{dom}_summary.parquet"))]
+        absent = [y for y in missing if y not in zero]
+        print(f"{os.path.basename(stem)}: {n_tc} TCs from {len(years)} years"
+              + (f" (zero TCs in {zero})" if zero else "") + (f" (NOT PROCESSED: {absent})" if absent else "")
+              + (" nc" if want_nc else "") + (" csv" if want_csv else "") + (" png" if want_png else ""),
+              flush=True)
+    print(f"wrote {n_nc} NetCDF, {n_csv} CSV and {n_png} PNG files in {args.out_dir}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("out_dir")
     p.add_argument("--experiments", nargs="+")
+    p.add_argument("--years", type=m6.parse_years, help="e.g. 1990-2014 (inclusive) or 1990,2000")
+    p.add_argument("--combine", action="store_true",
+                   help="one map/CSV/NetCDF per experiment and domain for all (selected) years")
     p.add_argument("--no-maps", action="store_true")
     p.add_argument("--no-csv", action="store_true")
     p.add_argument("--overwrite", action="store_true")
     args = p.parse_args()
+    if args.combine:
+        return run_combined(args)
 
     files = sorted(glob.glob(os.path.join(args.out_dir, "*_TCs.nc")))
     n_png = n_csv = 0
     for f in files:
         mt = TC_FILE_RE.match(os.path.basename(f))
         if not mt or (args.experiments and mt["exp"] not in args.experiments):
+            continue
+        if args.years and int(mt["year"]) not in args.years:
             continue
         stem = f[:-len("_TCs.nc")]
         png, csv = stem + "_nature.png", stem + "_tracks.csv"

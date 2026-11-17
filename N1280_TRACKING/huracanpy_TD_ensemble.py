@@ -135,7 +135,11 @@ def experiment_panels(experiment, years, domain_name):
     return panels
 
 
-def plot_domain_ensemble(domain_name, domain, experiments, years):
+def plot_domain_ensemble(domain_name, domain, experiments, years, name="ENSEMBLE"):
+    """name: "ENSEMBLE" (default) for the model ensemble; any other name
+    (e.g. "ERA5", "JRA3Q") plots one dataset as a single-member map with that
+    name in the title and output file (used by huracanpy_TD_reanalysis.py).
+    """
     members = {}
     for experiment in experiments:
         panels = experiment_panels(experiment, years, domain_name)
@@ -231,18 +235,21 @@ def plot_domain_ensemble(domain_name, domain, experiments, years):
 
     fig.colorbar(
         mesh, ax=[ax_big] + axes_small, shrink=0.6, pad=0.02,
-        label="Ensemble mean TC Track Density (log scale)",
+        label="Ensemble mean TC Track Density (log scale)" if name == "ENSEMBLE" else "TC Track Density (log scale)",
     )
 
-    if n_members <= 1:
+    if n_members <= 1 and name == "ENSEMBLE":
         print(f"[{domain_name}] only one experiment has data ({next(iter(members))}); no spread contours")
 
-    fig.suptitle(
-        f"{domain['title']} TC Track Density Ensemble ({years.start}-{years.stop - 1})\n"
-        f"Mean of {n_members} member(s): {', '.join(members.keys())} - black contours: ensemble std dev"
-    )
+    if name == "ENSEMBLE":
+        fig.suptitle(
+            f"{domain['title']} TC Track Density Ensemble ({years.start}-{years.stop - 1})\n"
+            f"Mean of {n_members} member(s): {', '.join(members.keys())} - black contours: ensemble std dev"
+        )
+    else:
+        fig.suptitle(f"{domain['title']} TC Track Density for {name} ({years.start}-{years.stop - 1})")
     fig.savefig(
-        f"{BASE_DIR}/density_ENSEMBLE_{years.start}-{years.stop - 1}_{domain_name}_MultiNature.png", dpi=300,
+        f"{BASE_DIR}/density_{name}_{years.start}-{years.stop - 1}_{domain_name}_MultiNature.png", dpi=300,
     )
     plt.show()
 

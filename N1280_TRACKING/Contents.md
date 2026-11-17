@@ -21,7 +21,7 @@ docstring has the details.
 | File | Purpose |
 |---|---|
 | `huracanpy_identify_method6.py` | **The TC identification**: method 6 ("WCSI warm core only"), self-contained, command-line options for any TRACK output layout. |
-| `huracanpy_method6_maps_csv.py` | Per year and domain: PNG map and CSV of the identified TC tracks (Hart parameters, WCSI nature). |
+| `huracanpy_method6_maps_csv.py` | Per year and domain - or, with `--combine`, for all years together - a PNG map and a CSV of the identified TC tracks (Hart parameters, WCSI nature); `--combine` also writes the joined NetCDF. |
 | `huracanpy_identify_batch_all.py` | Earlier identification script, kept as a library of shared definitions imported by the scripts below. Do not run it for identification (needs wcsi 1.x). |
 
 ## Analysis and comparison with observations / reanalyses
@@ -29,6 +29,7 @@ docstring has the details.
 | File | Purpose |
 |---|---|
 | `huracanpy_TD_ensemble.py` | Ensemble track-density maps per basin. |
+| `huracanpy_TD_reanalysis.py` | The same track-density maps for ERA5 and JRA3Q (method-6 natures), comparable with the ensemble maps. |
 | `huracanpy_TC_genesis_maps.py` | Genesis density maps and genesis-latitude distributions. |
 | `huracanpy_TC_interannual.py` | Interannual time series per basin (counts, ACE, genesis and LMI latitude). |
 | `huracanpy_era5_batch_all.py`, `huracanpy_era5_TD.py` | TC identification and track density for ERA5 reanalysis tracks. |
