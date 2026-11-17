@@ -22,7 +22,8 @@ docstring; this README tells you which script to open.
 
 If you already have TRACK output with the Hart parameters added (the
 `tr_trs_pos*.hart.new.nc` / `tr_trs_neg*.hart.new.nc` files), you only need
-two scripts, which work on a laptop or on JASMIN:
+two scripts, which work on a laptop or on JASMIN, for any TRACK output (our
+N1280 runs, reanalyses, DestinE, ...):
 
 ```
 pip install --upgrade git+https://github.com/Huracan-project/wcsi   # wcsi >= 2 required
@@ -37,6 +38,11 @@ python huracanpy_identify_method6.py --experiments <exp ...> --years 1990-2014 \
 
 # 2. a PNG map and a CSV of the tracks (Hart parameters, WCSI nature) per year and domain
 python huracanpy_method6_maps_csv.py <output folder>
+
+# 3. the same, but all years of each experiment and domain together
+#    (one map, one CSV and one joined NetCDF file per experiment and domain)
+python huracanpy_method6_maps_csv.py <output folder> --combine
+python huracanpy_method6_maps_csv.py <output folder> --combine --years 1990-1999 --experiments hist
 ```
 
 Worked example - Kevin Hodges' DestinE IFS-NEMO2 tracks on JASMIN (MSLP field
@@ -248,9 +254,34 @@ experiment/years are skipped unless `--overwrite` is given.
 
 **`huracanpy_method6_maps_csv.py <output folder>`** then writes, for each
 year and domain with at least one TC, a map (`_nature.png`: marker = WCSI
-nature, colour = MSLP) and a CSV of the track points (`_tracks.csv`: position,
-vorticity at every level, MSLP and 10 m wind, Hart B/VTL/VTU, `is_tc`,
-`nature`). It only reads the NetCDF output, so it is quick to re-run.
+nature, colour = MSLP, P/L = first/last point) and a CSV of the track points
+(`_tracks.csv`: position, vorticity at every level, MSLP and 10 m wind with the
+positions TRACK found them at, Hart B/VTL/VTU, `is_tc`, `nature`; TRACK's 1e25
+missing values are left empty). It only reads the NetCDF output, so it is
+quick to re-run; existing files are skipped unless `--overwrite`. Options:
+
+| Option | Effect |
+|---|---|
+| `--experiments hist cont` | only these experiments |
+| `--years 1990-2014` or `--years 1990,2000` | only these years (inclusive range or list) |
+| `--combine` | instead of one set of files per year, join all (selected) years of each experiment and domain: `{experiment}_{y0}-{y1}_{domain}_nature.png`, `_tracks.csv` (with an extra `year` column) and `_allTCs.nc` (the joined tracks). Useful when there are few TCs per year, e.g. DestinE. |
+| `--no-maps`, `--no-csv` | skip the maps or the CSVs |
+| `--overwrite` | redo existing files |
+
+With `--combine`, track ids are renumbered year x 1000000 + the original TRACK
+id, so they stay unique across years. The log lists years with zero TCs in that
+domain (processed, but no `_TCs.nc` file because there was nothing to save)
+separately from years that were never processed.
+
+**NetCDF format.** All `_TCs.nc` and `_allTCs.nc` files are written by
+huracanpy (`huracanpy.save`) in the standard CF-convention layout for
+trajectories (a "contiguous ragged array", `featureType = "trajectory"`):
+every track point along a `record` dimension (time, lon, lat, MSLP,
+`relative_vorticity(record, pressure)`, `cps_b`/`cps_vtl`/`cps_vtu`, `is_tc`,
+`nature`, ...), and per track along a `trajectory` dimension its `track_id`
+and `rowSize` (number of points). `huracanpy.load(file)` reads them back with
+`track_id` repeated on every point; other tools rebuild it by repeating each
+`track_id` `rowSize` times. The CSVs already have it on every row.
 
 `huracanpy_identify_batch_all.py` is the earlier identification script. It
 is kept only because the Part 4, ERA5 and IBTrACS scripts import shared
@@ -269,7 +300,8 @@ into the shared method-6 directory rather than regenerating them.
 ## Part 4 - Ensemble analysis
 
 Three scripts, all driven by the same environment variables so they stay
-pointed at the same run and the same subset of basins/years:
+pointed at the same run and the same subset of basins/years (plus the
+reanalysis/observation maps below):
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -295,6 +327,26 @@ TC_RUN_DIR=METHOD6_ENSEMBLE_RUN python huracanpy_TC_interannual.py     # counts/
   dev shaded band, IBTrACS/ERA5/JRA3Q for comparison, trend and correlation
   statistics in the legend and a `_stats.csv`.
 
+**Track density for reanalyses and observations**, directly comparable with
+the ensemble's `density_ENSEMBLE_<years>_<domain>_MultiNature.png`:
+
+```
+TC_RUN_DIR=METHOD6_ENSEMBLE_RUN python huracanpy_TD_reanalysis.py   # ERA5 and JRA3Q (or name them: ... ERA5)
+python huracanpy_ibtracs_TD.py                                      # IBTrACS
+```
+
+- `huracanpy_TD_reanalysis.py` uses the ensemble script's own plotting
+  (`plot_domain_ensemble(..., name="ERA5")`), so grid, colour scale, domains
+  and the method-6 nature panels are the same; it writes
+  `density_{ERA5,JRA3Q}_<years>_<domain>_MultiNature.png` into `TC_RUN_DIR`.
+  There are no spread contours (one dataset).
+- `huracanpy_ibtracs_TD.py` writes `density_IBTrACS_<years>_<domain>_MultiNature.png`
+  into the current directory. WCSI natures can't be computed for observations,
+  so its small panels show IBTrACS's own natures (TS, ET, SS, DS, MX); its
+  years come from `YEARS` in `huracanpy_ibtracs_batch_all.py` (1980-2013).
+- Each figure scales its colours to its own maximum - compare the colour bars,
+  not just the colours.
+
 All three read every experiment named in their own `EXPERIMENTS` list (kept
 in sync across the three files) from `TC_RUN_DIR` - add a newly-identified
 experiment there once its method-6 output exists in that shared directory.
@@ -316,7 +368,7 @@ experiment degrades gracefully rather than blocking the others.
    years) before trusting it in the ensemble.
 6. Run `huracanpy_identify_method6.py --experiments u-<experiment>` to
    produce its method-6 output in the shared ensemble directory (optionally
-   `huracanpy_method6_maps_csv.py` for maps and CSVs).
+   `huracanpy_method6_maps_csv.py` for maps and CSVs, per year or `--combine`d).
 7. Add it to the `EXPERIMENTS` list in all three Part 4 scripts and
    re-run them.
 
