@@ -66,6 +66,7 @@ import huracanpy
 import numpy as np
 import pandas as pd
 import wcsi
+import xarray as xr
 from parse import parse
 
 if not hasattr(wcsi, "wcsi") or "vort_warm_core_threshold" not in wcsi.wcsi.__code__.co_varnames:
@@ -194,20 +195,27 @@ def find_input(experiment, year, hemisphere):
 
 
 def load_tracks(path):
-    """Load a TRACK file; gather relative_vorticity_{level} variables into one
-    relative_vorticity(record, pressure) variable, keeping the tracked T63
-    vorticity as "vorticity".
+    """Load a TRACK file exactly as huracanpy reads it: variables keep their
+    TRACK names (Hart_B / Hart_Vtl / Hart_Vtu, the tracked T63 vorticity
+    "relative_vorticity", and relative_vorticity_{level} at each added level),
+    and nothing is added or merged.
     """
-    tracks = huracanpy.load(path, rename=dict(Hart_B="cps_b", Hart_Vtl="cps_vtl", Hart_Vtu="cps_vtu"))
-    tracks["vorticity"] = tracks["relative_vorticity"]
-    plevs = [int(r.named["n"]) for r in (parse("relative_vorticity_{n:d}", v) for v in tracks) if r is not None]
-    if plevs:
-        tracks["pressure"] = ("pressure", plevs)
-        tracks = tracks.set_coords("pressure")
-        vort = np.stack([tracks[f"relative_vorticity_{p}"].values for p in plevs], axis=1)
-        tracks = tracks.drop_vars([f"relative_vorticity_{p}" for p in plevs])
-        tracks["relative_vorticity"] = (["record", "pressure"], vort)
-    return tracks
+    return huracanpy.load(path)
+
+
+def vorticity_profile(tracks):
+    """relative_vorticity(record, pressure) DataArray for wcsi, built from the
+    relative_vorticity_{level} variables (levels in file order). The tracks
+    Dataset is not modified.
+    """
+    plevs = [int(r.named["n"]) for r in (parse("relative_vorticity_{n:d}", v) for v in tracks.data_vars)
+             if r is not None]
+    if not plevs:
+        raise ValueError("no relative_vorticity_{level} variables in the tracks")
+    return xr.DataArray(
+        np.stack([tracks[f"relative_vorticity_{p}"].values for p in plevs], axis=1),
+        dims=("record", "pressure"), coords={"pressure": plevs}, name="relative_vorticity",
+    )
 
 
 def mslp_lon_variable(tracks, path):
@@ -253,7 +261,7 @@ def identify(tracks, path, label):
     if not no_mslp_min.any():
         print(f"[{label}] WARNING: every point has an MSLP minimum - is {lon_var} the right variable?")
 
-    vort = tracks.relative_vorticity
+    vort = vorticity_profile(tracks)
     levels = list(vort.pressure.values)
     if 850 not in levels or WARM_CORE_UPPER_LEVEL not in levels:
         raise ValueError(f"{path}: need relative_vorticity at 850 and {WARM_CORE_UPPER_LEVEL} hPa, have {levels}")
@@ -262,7 +270,7 @@ def identify(tracks, path, label):
         vort = vort.assign_coords(pressure=[200 if p == WARM_CORE_UPPER_LEVEL else p for p in levels])
 
     is_tc = wcsi.wcsi(
-        track_id, tracks.cps_b.values, tracks.cps_vtl.values, tracks.cps_vtu.values, vort,
+        track_id, tracks.Hart_B.values, tracks.Hart_Vtl.values, tracks.Hart_Vtu.values, vort,
         filter_all=is_ocean & ~no_mslp_min,
         npoints=npoints,
         vort_threshold=VORT_THRESHOLD,
@@ -275,8 +283,8 @@ def identify(tracks, path, label):
     tc_tracks = tracks.isel(record=tc_mask)
     tc_tracks["is_tc"] = ("record", is_tc[tc_mask])
     tc_tracks["nature"] = ("record", wcsi.nature(
-        tc_tracks.track_id.values, tc_tracks.cps_b.values, tc_tracks.cps_vtl.values,
-        tc_tracks.cps_vtu.values, no_mslp_min[tc_mask], is_tc[tc_mask],
+        tc_tracks.track_id.values, tc_tracks.Hart_B.values, tc_tracks.Hart_Vtl.values,
+        tc_tracks.Hart_Vtu.values, no_mslp_min[tc_mask], is_tc[tc_mask],
     ))
     return tc_tracks, basin[tc_mask]
 
@@ -290,11 +298,11 @@ def gap_basin_domain(basin, apex_lon):
 
 
 def assign_domains(tc_tracks, basin):
-    """track_id -> domain: basin of the track's maximum |vorticity| during its
-    TC phase (gap basins merged as IBTrACS does); NaN if in no domain.
+    """track_id -> domain: basin of the track's maximum |tracked T63 vorticity|
+    during its TC phase (gap basins merged as IBTrACS does); NaN if in no domain.
     """
     points = pd.DataFrame(dict(
-        track_id=tc_tracks.track_id.values, vorticity=np.abs(tc_tracks.vorticity.values),
+        track_id=tc_tracks.track_id.values, vorticity=np.abs(tc_tracks.relative_vorticity.values),
         basin=basin, lon=tc_tracks.lon.values, is_tc=tc_tracks.is_tc.values,
     ))
     tc = points[points.is_tc]

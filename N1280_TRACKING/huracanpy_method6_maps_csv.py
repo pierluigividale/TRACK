@@ -46,14 +46,27 @@ FILL = 1e25
 
 
 def tracks_table(tracks):
-    """Per-point DataFrame with readable column names."""
+    """Per-point DataFrame with readable column names.
+
+    Reads both _TCs.nc layouts: the current one (TRACK's own names - Hart_B /
+    Hart_Vtl / Hart_Vtu, tracked T63 vorticity "relative_vorticity",
+    relative_vorticity_{level}) and the one written before 2026-11-18 (cps_b /
+    cps_vtl / cps_vtu, T63 vorticity "vorticity", profile merged into
+    relative_vorticity(record, pressure)). The CSV columns are the same for both.
+    """
+    merged = "relative_vorticity" in tracks and "pressure" in tracks.relative_vorticity.dims
+    t63 = tracks.vorticity if merged else tracks.relative_vorticity
     df = pd.DataFrame({"track_id": tracks.track_id.values,
                        "time": pd.to_datetime(tracks.time.values),
                        "lon": tracks.lon.values, "lat": tracks.lat.values,
-                       "vorticity_T63": tracks.vorticity.values})
-    if "relative_vorticity" in tracks and "pressure" in tracks.relative_vorticity.dims:
+                       "vorticity_T63": t63.values})
+    if merged:
         for i, p in enumerate(tracks.pressure.values):
             df[f"relative_vorticity_{int(p)}"] = tracks.relative_vorticity.values[:, i]
+    else:
+        for v in tracks.data_vars:
+            if re.fullmatch(r"relative_vorticity_\d+", v):
+                df[v] = tracks[v].values
     # fields TRACK added with their own positions (longitude_N / latitude_N)
     names = list(tracks.variables)
     for field in ("air_pressure_at_mean_sea_level", "psl", "wind_speed", "wind_speed_10m"):
@@ -64,9 +77,10 @@ def tracks_table(tracks):
         if i >= 2 and re.fullmatch(r"longitude_\d+", names[i - 2]):
             df[f"{field}_lon"] = tracks[names[i - 2]].values
             df[f"{field}_lat"] = tracks[names[i - 1]].values
-    df["Hart_B"] = tracks.cps_b.values
-    df["Hart_VTL"] = tracks.cps_vtl.values
-    df["Hart_VTU"] = tracks.cps_vtu.values
+    old = "cps_b" in tracks
+    df["Hart_B"] = (tracks.cps_b if old else tracks.Hart_B).values
+    df["Hart_VTL"] = (tracks.cps_vtl if old else tracks.Hart_Vtl).values
+    df["Hart_VTU"] = (tracks.cps_vtu if old else tracks.Hart_Vtu).values
     df["is_tc"] = tracks.is_tc.values.astype(bool)
     df["nature"] = tracks.nature.values.astype(str)
     num = df.select_dtypes("number").columns
