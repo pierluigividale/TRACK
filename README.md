@@ -276,12 +276,18 @@ separately from years that were never processed.
 **NetCDF format.** All `_TCs.nc` and `_allTCs.nc` files are written by
 huracanpy (`huracanpy.save`) in the standard CF-convention layout for
 trajectories (a "contiguous ragged array", `featureType = "trajectory"`):
-every track point along a `record` dimension (time, lon, lat, MSLP,
-`relative_vorticity(record, pressure)`, `cps_b`/`cps_vtl`/`cps_vtu`, `is_tc`,
-`nature`, ...), and per track along a `trajectory` dimension its `track_id`
+every track point along a `record` dimension (time, lon, lat, MSLP, every
+TRACK variable under its original name - the tracked T63 vorticity
+`relative_vorticity`, `relative_vorticity_<level>` at each level,
+`Hart_B`/`Hart_Vtl`/`Hart_Vtu` - plus `is_tc` and `nature` added by WCSI),
+and per track along a `trajectory` dimension its `track_id`
 and `rowSize` (number of points). `huracanpy.load(file)` reads them back with
 `track_id` repeated on every point; other tools rebuild it by repeating each
 `track_id` `rowSize` times. The CSVs already have it on every row.
+Files written before 18 Nov 2026 used `cps_b`/`cps_vtl`/`cps_vtu`, called
+the T63 vorticity `vorticity`, and merged the levels into
+`relative_vorticity(record, pressure)`. The TC identification results are
+identical, and `huracanpy_method6_maps_csv.py` reads both layouts.
 
 `huracanpy_identify_batch_all.py` is the earlier identification script. It
 is kept only because the Part 4, ERA5 and IBTrACS scripts import shared
