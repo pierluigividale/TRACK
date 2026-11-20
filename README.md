@@ -39,10 +39,16 @@ python huracanpy_identify_method6.py --experiments <exp ...> --years 1990-2014 \
 # 2. a PNG map and a CSV of the tracks (Hart parameters, WCSI nature) per year and domain
 python huracanpy_method6_maps_csv.py <output folder>
 
-# 3. the same, but all years of each experiment and domain together
-#    (one map, one CSV and one joined NetCDF file per experiment and domain)
+# 3. the same, but tracks joined into one map, one CSV and one NetCDF file:
+#    along time (all years of each experiment and domain) ...
 python huracanpy_method6_maps_csv.py <output folder> --combine
 python huracanpy_method6_maps_csv.py <output folder> --combine --years 1990-1999 --experiments hist
+#    ... along the ensemble (all members, one file per year and domain) ...
+python huracanpy_method6_maps_csv.py <output folder> --combine members --years 2005 \
+    --experiments u-ch330 u-ck777 u-ck778 u-dc009
+#    ... or both (all members and all years, one file per domain)
+python huracanpy_method6_maps_csv.py <output folder> --combine both \
+    --experiments u-ch330 u-ck777 u-ck778 u-dc009 --ensemble-name ENS4 --output-dir <folder>
 ```
 
 Worked example - Kevin Hodges' DestinE IFS-NEMO2 tracks on JASMIN (MSLP field
@@ -264,14 +270,44 @@ quick to re-run; existing files are skipped unless `--overwrite`. Options:
 |---|---|
 | `--experiments hist cont` | only these experiments |
 | `--years 1990-2014` or `--years 1990,2000` | only these years (inclusive range or list) |
-| `--combine` | instead of one set of files per year, join all (selected) years of each experiment and domain: `{experiment}_{y0}-{y1}_{domain}_nature.png`, `_tracks.csv` (with an extra `year` column) and `_allTCs.nc` (the joined tracks). Useful when there are few TCs per year, e.g. DestinE. |
+| `--combine` or `--combine years` | instead of one set of files per year, join all (selected) years of each experiment and domain: `{experiment}_{y0}-{y1}_{domain}_nature.png`, `_tracks.csv` (with an extra `year` column) and `_allTCs.nc` (the joined tracks). Useful when there are few TCs per year, e.g. DestinE. |
+| `--combine members` | join the ensemble members instead, one set of files per year and domain: `{ENSEMBLE}_{year}_{domain}_...` |
+| `--combine both` | join along both, one set of files per domain: `{ENSEMBLE}_{y0}-{y1}_{domain}_...` |
+| `--ensemble-name ENS4` | the `{ENSEMBLE}` label in those file names (default `ENSEMBLE`) |
+| `--output-dir <folder>` | where `--combine` writes (default: the output folder it reads from) |
 | `--no-maps`, `--no-csv` | skip the maps or the CSVs |
 | `--overwrite` | redo existing files |
 
-With `--combine`, track ids are renumbered year x 1000000 + the original TRACK
-id, so they stay unique across years. The log lists years with zero TCs in that
-domain (processed, but no `_TCs.nc` file because there was nothing to save)
-separately from years that were never processed.
+**Combining years.** Track ids are renumbered year x 1000000 + the original
+TRACK id, so they stay unique across years. The log lists years with zero TCs
+in that domain (processed, but no `_TCs.nc` file because there was nothing to
+save) separately from years that were never processed.
+
+**Combining members.** The members are the experiments given with
+`--experiments`, or, if it is not given, the present-day ensemble
+(`EXPERIMENTS` in `huracanpy_identify_method6.py`: u-ch330, u-ck777, u-ck778,
+u-dc009). The ensemble is not stored as an xarray dimension - tracks have
+different lengths and every member has a different number of them, so that
+would mean padding with NaN, and huracanpy expects a flat list of points - but
+as a `member` variable on the `record` dimension, next to `year`:
+
+```python
+tracks = huracanpy.load("ENSEMBLE_1980-2014_NATL_allTCs.nc")
+tracks.groupby("member")                                  # per-member analysis
+dc009 = tracks.where(tracks.member == "u-dc009", drop=True)
+```
+
+- Track ids are renumbered member_index x 10^10 + year x 10^6 + the original
+  TRACK id (member_index = position in the member list, from 0), so they are
+  unique across members and years. The original id is also kept, as
+  `track_id_orig`. Ids in `--combine years` files have no member prefix, so the
+  same track has a different `track_id` there; `track_id_orig` and `year` match
+  across all of them.
+- Only years that every member has processed are used, so a year missing from
+  one member does not look like fewer storms. A year with zero TCs counts as
+  processed. The years left out are listed in the log, per member.
+- The CSV has extra `member`, `year` and `track_id_orig` columns. The log and
+  the map title give the number of TCs per member and the rate per member-year.
 
 **NetCDF format.** All `_TCs.nc` and `_allTCs.nc` files are written by
 huracanpy (`huracanpy.save`) in the standard CF-convention layout for
@@ -374,7 +410,8 @@ experiment degrades gracefully rather than blocking the others.
    years) before trusting it in the ensemble.
 6. Run `huracanpy_identify_method6.py --experiments u-<experiment>` to
    produce its method-6 output in the shared ensemble directory (optionally
-   `huracanpy_method6_maps_csv.py` for maps and CSVs, per year or `--combine`d).
+   `huracanpy_method6_maps_csv.py` for maps and CSVs, per year or `--combine`d
+   along years, members or both).
 7. Add it to the `EXPERIMENTS` list in all three Part 4 scripts and
    re-run them.
 
