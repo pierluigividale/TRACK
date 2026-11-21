@@ -200,7 +200,44 @@ def load_tracks(path):
     "relative_vorticity", and relative_vorticity_{level} at each added level),
     and nothing is added or merged.
     """
-    return huracanpy.load(path)
+    return decode_absolute_time(huracanpy.load(path))
+
+
+def decode_absolute_time(tracks):
+    """Turn CDO "absolute" times into datetime64 (found 2026-11-21 on Kevin's
+    EERIE tracks, e.g. cx993: time:units = "day as %Y%m%d.%f", values like
+    18511228.25). xarray cannot decode that unit, so time stayed float64 and
+    infer_npoints failed with "ufunc 'divide' cannot use operands with types
+    float64 and timedelta64". Files with "<unit> since <date>" are already
+    decoded by xarray and are returned unchanged.
+
+    For a non-Gregorian calendar (time_calendar / calendar attribute, e.g.
+    360_day, which has 30 February) the dates are counted as elapsed time from
+    the first one, in that calendar, and added to that first date - the same
+    thing that happens to "hours since" files whose calendar xarray ignores.
+    """
+    time = tracks.time
+    units = str(time.attrs.get("units", "")).strip()
+    if np.issubdtype(time.dtype, np.datetime64) or not units.startswith("day as %Y%m%d"):
+        return tracks
+    calendar = str(time.attrs.get("calendar", time.attrs.get("time_calendar", "standard"))).strip().lower()
+    v = time.values.astype("float64")
+    ymd = np.floor(v).astype("int64")
+    seconds = np.rint((v - ymd) * 86400).astype("int64")
+    if calendar in ("standard", "gregorian", "proleptic_gregorian", ""):
+        dates = pd.to_datetime(ymd.astype(str), format="%Y%m%d").values + seconds.astype("timedelta64[s]")
+    else:
+        import cftime
+        y, m, d = ymd // 10000, ymd // 100 % 100, ymd % 100
+        first = int(np.argmin(v))
+        ref = f"days since {y[first]:04d}-{m[first]:02d}-{d[first]:02d}"
+        days = np.array([cftime.date2num(cftime.datetime(int(a), int(b), int(c), calendar=calendar), ref,
+                                         calendar=calendar) for a, b, c in zip(y, m, d)])
+        dates = (np.datetime64(f"{y[first]:04d}-{m[first]:02d}-{d[first]:02d}", "s")
+                 + (days * 86400).astype("int64").astype("timedelta64[s]") + seconds.astype("timedelta64[s]"))
+    attrs = {k: val for k, val in time.attrs.items() if k not in ("units", "calendar")}
+    return tracks.assign_coords(time=("record", dates.astype("datetime64[ns]"), attrs)) if "time" in tracks.coords \
+        else tracks.assign(time=("record", dates.astype("datetime64[ns]"), attrs))
 
 
 def vorticity_profile(tracks):
