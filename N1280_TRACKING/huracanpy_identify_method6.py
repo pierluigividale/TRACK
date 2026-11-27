@@ -9,13 +9,20 @@ this script:
      added - the "hart.new" files);
   2. flags TC points with wcsi.wcsi() using the method-6 criteria below;
   3. classifies every point of each TC track (TC/BC/Tr/MV/Ot/Vo) with
-     wcsi.nature();
+     wcsi.nature(), one track at a time (see nature_per_track);
   4. assigns each TC track to ONE ocean domain - the basin of its maximum
      vorticity during its TC phase, with the AUS and Central Pacific basins
      merged as IBTrACS counts them;
   5. writes, per domain, {experiment}_{year}_{domain}_TCs.nc (the TC tracks)
      and {experiment}_{year}_{domain}_summary.parquet (one row per track),
-     plus optionally a map ({...}_nature.png) and counts CSVs for the run.
+     plus optionally a map ({...}_nature.png) and counts CSVs for the run;
+  6. with --all-nature, also writes {experiment}_{year}_{NH|SH}_all_nature.nc:
+     EVERY vortex of the input file (the whole set the identification starts
+     from, not just the TCs), with per-point is_tc (the wcsi() flag, before the
+     genesis-latitude filter) and nature (wcsi.nature() run on each track
+     separately - see nature_per_track - so non-TC tracks get BC/Tr/MV/Ot/Vo),
+     and per-point tc_domain: the domain whose _TCs.nc file the track was
+     saved in, "" if it is not one of the saved TCs.
 
 Those file names are what huracanpy_TD_ensemble.py, huracanpy_TC_interannual.py
 and huracanpy_TC_genesis_maps.py read.
@@ -44,6 +51,7 @@ Usage:
   python huracanpy_identify_method6.py                      # settings below
   python huracanpy_identify_method6.py --experiments u-ck777 --years 2000-2001
   python huracanpy_identify_method6.py --out-dir /tmp/test --overwrite --maps
+  python huracanpy_identify_method6.py --experiments u-ck777 --years 2000 --all-nature
 
   # DestinE IFS-NEMO2 (Kevin's TRACK runs: MSLP field "psl", levels to 200 hPa)
   python huracanpy_identify_method6.py --experiments hist cont --years 1990-2014 \\
@@ -281,9 +289,32 @@ def infer_npoints(tracks, hours):
 # ---------------------------------------------------------------------------
 # Identification
 # ---------------------------------------------------------------------------
-def identify(tracks, path, label):
-    """Return (tc_tracks with is_tc and nature added, basin per tc_tracks record),
-    or (None, None) if no TC.
+def nature_per_track(track_id, b, vtl, vtu, vortex, is_tc):
+    """wcsi.nature() called separately on each track.
+
+    Found 2026-11-27: wcsi.nature() (wcsi 2.1.0) does not keep tracks apart
+    when they are concatenated in one array. A run of points meeting a
+    criterion that reaches the end of one track and continues at the start of
+    the next is treated as one run, so TC labels leak into the neighbouring
+    track: on all vortices of u-ch330 1990, 14 NH and 7 SH non-TC tracks got
+    "TC" points with no wcsi point at all; on the TC tracks alone (the method-6
+    _TCs.nc files) 8 of 66 NH and 3 of 42 SH TCs got extra "TC" points at their
+    start or end. Calling it per track avoids that (~1.5 s for 8000 tracks).
+    Used for every output since 2026-11-27; method-6 runs made before then
+    have the leaked TC labels in their _TCs.nc files (is_tc was never affected).
+    """
+    out = np.empty(len(track_id), dtype="U2")
+    bounds = np.flatnonzero(np.r_[True, track_id[1:] != track_id[:-1], True])
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        out[s:e] = wcsi.nature(track_id[s:e], b[s:e], vtl[s:e], vtu[s:e], vortex[s:e], is_tc[s:e])
+    return out
+
+
+def identify(tracks, path, label, all_nature=False):
+    """Return (tc_tracks with is_tc and nature added, basin per tc_tracks record,
+    all tracks with is_tc and nature added if all_nature else None); the first
+    two are None if there is no TC. Nature is computed one track at a time
+    (nature_per_track), so a TC track has the same nature in both outputs.
     """
     track_id = tracks.track_id.values
     lon_var = mslp_lon_variable(tracks, path)
@@ -315,15 +346,22 @@ def identify(tracks, path, label):
         coherent=COHERENT,
     )
     tc_mask = np.isin(track_id, np.unique(track_id[is_tc]))
+    all_tracks = None
+    if all_nature:
+        all_tracks = tracks.copy()
+        all_tracks["is_tc"] = ("record", is_tc)
+        all_tracks["nature"] = ("record", nature_per_track(
+            track_id, tracks.Hart_B.values, tracks.Hart_Vtl.values, tracks.Hart_Vtu.values, no_mslp_min, is_tc,
+        ))
     if not tc_mask.any():
-        return None, None
+        return None, None, all_tracks
     tc_tracks = tracks.isel(record=tc_mask)
     tc_tracks["is_tc"] = ("record", is_tc[tc_mask])
-    tc_tracks["nature"] = ("record", wcsi.nature(
+    tc_tracks["nature"] = ("record", nature_per_track(
         tc_tracks.track_id.values, tc_tracks.Hart_B.values, tc_tracks.Hart_Vtl.values,
         tc_tracks.Hart_Vtu.values, no_mslp_min[tc_mask], is_tc[tc_mask],
     ))
-    return tc_tracks, basin[tc_mask]
+    return tc_tracks, basin[tc_mask], all_tracks
 
 
 def gap_basin_domain(basin, apex_lon):
@@ -372,9 +410,14 @@ def filter_genesis_latitude(tracks, threshold_latitude):
     return tracks.hrcn.sel_id(keep.track_id)
 
 
-def process_file(experiment, year, hemisphere, path, domains, out_dir, make_maps):
+def all_nature_file(out_dir, experiment, year, hemisphere):
+    return os.path.join(out_dir, f"{experiment}_{year}_{hemisphere}H_all_nature.nc")
+
+
+def process_file(experiment, year, hemisphere, path, domains, out_dir, make_maps, all_nature=False):
     label = f"{experiment} {year} {hemisphere}H"
-    tc_tracks, basin = identify(load_tracks(path), path, label)
+    tc_tracks, basin, all_tracks = identify(load_tracks(path), path, label, all_nature)
+    saved = {}  # track_id -> domain of the _TCs.nc file it was saved in
     domain_of = assign_domains(tc_tracks, basin) if tc_tracks is not None else pd.Series(dtype=object)
 
     results = []
@@ -391,6 +434,7 @@ def process_file(experiment, year, hemisphere, path, domains, out_dir, make_maps
             os.remove(tc_file)  # --overwrite: don't leave a stale file if now empty
         if dtracks is not None:
             huracanpy.save(dtracks, tc_file)
+            saved.update(dict.fromkeys(np.unique(dtracks.track_id.values).tolist(), name))
             if make_maps:
                 plot_domain_nature(dtracks, f"{domain['title']} tracks by nature, {experiment} {year} ({n_tc} TCs)",
                                    os.path.join(out_dir, f"{tag}_nature.png"), domain["extent"])
@@ -398,6 +442,16 @@ def process_file(experiment, year, hemisphere, path, domains, out_dir, make_maps
         summary.to_parquet(os.path.join(out_dir, f"{tag}_summary.parquet"))
         print(f"[{experiment} {year} {name}] {n_tc} tropical cyclones")
         results.append(dict(experiment=experiment, year=year, domain=name, n_tc=n_tc))
+    if all_tracks is not None:
+        all_tracks["tc_domain"] = ("record", np.array([saved.get(t, "") for t in all_tracks.track_id.values.tolist()],
+                                                      dtype=object))
+        out = all_nature_file(out_dir, experiment, year, hemisphere)
+        if os.path.exists(out):
+            os.remove(out)
+        huracanpy.save(all_tracks, out)
+        nat = pd.Series(all_tracks.nature.values).value_counts()
+        print(f"[{label}] all-nature file: {all_tracks.track_id.to_series().nunique()} tracks, points by nature "
+              f"{', '.join(f'{k} {v}' for k, v in nat.items())} -> {os.path.basename(out)}")
     n_out = int(domain_of.isna().sum())
     if n_out:
         print(f"[{label}] {n_out} TC tracks peak outside every domain (not saved)")
@@ -500,6 +554,9 @@ def main():
                    help='longitude_N of the MSLP minimum, or "auto"')
     p.add_argument("--overwrite", action="store_true", help="recompute even if outputs exist")
     p.add_argument("--maps", action="store_true", default=MAKE_MAPS, help="also write nature maps")
+    p.add_argument("--all-nature", action="store_true",
+                   help="also write {experiment}_{year}_{NH|SH}_all_nature.nc: every input vortex with is_tc, "
+                        "nature and tc_domain")
     args = p.parse_args()
     DATA_DIR = args.data_dir
     INPUT_PATTERNS["N"], INPUT_PATTERNS["S"] = args.input_nh, args.input_sh
@@ -520,6 +577,9 @@ def main():
                 if not args.overwrite:
                     done = {n for n in domains
                             if os.path.exists(os.path.join(args.out_dir, f"{experiment}_{year}_{n}_summary.parquet"))}
+                    if args.all_nature and not os.path.exists(
+                            all_nature_file(args.out_dir, experiment, year, hemisphere)):
+                        done = set()  # TC outputs exist but the all-nature file does not: run it
                     if done == set(domains):
                         skipped.append(f"{experiment} {year} {hemisphere}H")
                         continue
@@ -528,7 +588,7 @@ def main():
                     continue
                 try:
                     results.extend(process_file(experiment, year, hemisphere, path, domains,
-                                                args.out_dir, args.maps))
+                                                args.out_dir, args.maps, args.all_nature))
                 except Exception as exc:
                     print(f"[{experiment} {year} {hemisphere}H] FAILED: {type(exc).__name__}: {exc}")
                     failed.append(f"{experiment} {year} {hemisphere}H")
