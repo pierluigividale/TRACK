@@ -258,6 +258,22 @@ WCSI `nature` of every point) and `{experiment}_{year}_{domain}_summary.parquet`
 (one row per track) - the layout Part 4's scripts expect. Already-processed
 experiment/years are skipped unless `--overwrite` is given.
 
+With **`--all-nature`** it also writes `{experiment}_{year}_{NH|SH}_all_nature.nc`
+for each hemisphere and year: **every** vortex of the input TRACK file (the
+whole set the identification starts from, ~8000 tracks per hemisphere per year
+for N1280), with per-point `is_tc` (the WCSI flag, before the genesis-latitude
+filter), `nature` (non-TC tracks get BC/Tr/MV/Ot/Vo) and `tc_domain` (the
+domain whose `_TCs.nc` file the track was saved in, empty if it is not one of
+the saved TCs). Years whose TC files exist but whose all-nature file does not
+are processed, not skipped.
+
+`nature` is computed one track at a time. `wcsi.nature()` (wcsi 2.1.0), given
+many tracks concatenated in one array, lets a run of TC labels at the end of
+one track carry on into the start of the next; before 2026-11-27 this script
+called it on all TC tracks at once, which put spurious TC labels at the start
+or end of ~7% of TC tracks (`is_tc`, and so TC counts, were never affected).
+All method-6 output was regenerated with the fix on 2026-11-27.
+
 **`huracanpy_method6_maps_csv.py <output folder>`** then writes, for each
 year and domain with at least one TC, a map (`_nature.png`: marker = WCSI
 nature, colour = MSLP, P/L = first/last point) and a CSV of the track points
