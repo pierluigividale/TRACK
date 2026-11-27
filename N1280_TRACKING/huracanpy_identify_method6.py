@@ -21,8 +21,15 @@ this script:
      from, not just the TCs), with per-point is_tc (the wcsi() flag, before the
      genesis-latitude filter) and nature (wcsi.nature() run on each track
      separately - see nature_per_track - so non-TC tracks get BC/Tr/MV/Ot/Vo),
-     and per-point tc_domain: the domain whose _TCs.nc file the track was
-     saved in, "" if it is not one of the saved TCs.
+     per-point tc_domain: the domain whose _TCs.nc file the track was
+     saved in, "" if it is not one of the saved TCs; per-point basin
+     (huracanpy WMO basin of the point); and per-point track_domain: the
+     domain of the track's maximum |vorticity| over its WHOLE life (the TC
+     rule of step 4 without the TC-phase restriction), "" if in no domain.
+     With --domains (e.g. --domains NATL) only those domains are processed
+     and the all-nature file keeps only tracks whose track_domain or
+     tc_domain is one of them; it is then named
+     {experiment}_{year}_{NH|SH}_{DOM1-DOM2}_all_nature.nc.
 
 Those file names are what huracanpy_TD_ensemble.py, huracanpy_TC_interannual.py
 and huracanpy_TC_genesis_maps.py read.
@@ -350,6 +357,7 @@ def identify(tracks, path, label, all_nature=False):
     if all_nature:
         all_tracks = tracks.copy()
         all_tracks["is_tc"] = ("record", is_tc)
+        all_tracks["basin"] = ("record", basin.astype(object))
         all_tracks["nature"] = ("record", nature_per_track(
             track_id, tracks.Hart_B.values, tracks.Hart_Vtl.values, tracks.Hart_Vtu.values, no_mslp_min, is_tc,
         ))
@@ -372,20 +380,26 @@ def gap_basin_domain(basin, apex_lon):
     return None
 
 
-def assign_domains(tc_tracks, basin):
-    """track_id -> domain: basin of the track's maximum |tracked T63 vorticity|
-    during its TC phase (gap basins merged as IBTrACS does); NaN if in no domain.
+def apex_domain(track_id, vorticity, basin, lon, mask=None):
+    """track_id -> domain of the point of maximum |vorticity| (among the points
+    in mask, if given), gap basins merged as IBTrACS does; NaN if in no domain.
     """
-    points = pd.DataFrame(dict(
-        track_id=tc_tracks.track_id.values, vorticity=np.abs(tc_tracks.relative_vorticity.values),
-        basin=basin, lon=tc_tracks.lon.values, is_tc=tc_tracks.is_tc.values,
-    ))
-    tc = points[points.is_tc]
-    apex = tc.loc[tc.groupby("track_id").vorticity.idxmax()].set_index("track_id")
+    points = pd.DataFrame(dict(track_id=track_id, vorticity=np.abs(vorticity), basin=basin, lon=lon))
+    if mask is not None:
+        points = points[mask]
+    apex = points.loc[points.groupby("track_id").vorticity.idxmax()].set_index("track_id")
     domain_of = apex.basin.map({d["basin"]: name for name, d in DOMAINS.items()})
     gap = domain_of.isna()
     domain_of[gap] = [gap_basin_domain(b, x) for b, x in zip(apex.basin[gap], apex.lon[gap])]
     return domain_of
+
+
+def assign_domains(tc_tracks, basin):
+    """track_id -> domain: basin of the track's maximum |tracked T63 vorticity|
+    during its TC phase (gap basins merged as IBTrACS does); NaN if in no domain.
+    """
+    return apex_domain(tc_tracks.track_id.values, tc_tracks.relative_vorticity.values, basin,
+                       tc_tracks.lon.values, tc_tracks.is_tc.values)
 
 
 def summarize(tracks):
@@ -410,8 +424,18 @@ def filter_genesis_latitude(tracks, threshold_latitude):
     return tracks.hrcn.sel_id(keep.track_id)
 
 
-def all_nature_file(out_dir, experiment, year, hemisphere):
-    return os.path.join(out_dir, f"{experiment}_{year}_{hemisphere}H_all_nature.nc")
+def all_nature_file(out_dir, experiment, year, hemisphere, subset=None):
+    """{experiment}_{year}_{NH|SH}_all_nature.nc, or ..._{NH|SH}_{DOM1-DOM2}_all_nature.nc
+    when only some of the hemisphere's domains are processed (--domains)."""
+    tag = f"_{'-'.join(subset)}" if subset else ""
+    return os.path.join(out_dir, f"{experiment}_{year}_{hemisphere}H{tag}_all_nature.nc")
+
+
+def domain_subset(domains, hemisphere):
+    """Sorted names of the processed domains if they are fewer than all of the
+    hemisphere's domains, else None (whole hemisphere)."""
+    every = {n for n, d in DOMAINS.items() if d["hemisphere"] == hemisphere}
+    return None if set(domains) >= every else sorted(domains)
 
 
 def process_file(experiment, year, hemisphere, path, domains, out_dir, make_maps, all_nature=False):
@@ -443,15 +467,26 @@ def process_file(experiment, year, hemisphere, path, domains, out_dir, make_maps
         print(f"[{experiment} {year} {name}] {n_tc} tropical cyclones")
         results.append(dict(experiment=experiment, year=year, domain=name, n_tc=n_tc))
     if all_tracks is not None:
-        all_tracks["tc_domain"] = ("record", np.array([saved.get(t, "") for t in all_tracks.track_id.values.tolist()],
-                                                      dtype=object))
-        out = all_nature_file(out_dir, experiment, year, hemisphere)
+        tid = all_tracks.track_id.values.tolist()
+        all_tracks["tc_domain"] = ("record", np.array([saved.get(t, "") for t in tid], dtype=object))
+        track_domain = apex_domain(all_tracks.track_id.values, all_tracks.relative_vorticity.values,
+                                   all_tracks.basin.values, all_tracks.lon.values)
+        all_tracks["track_domain"] = ("record", np.array(
+            [d if isinstance(d, str) else "" for d in track_domain.reindex(tid).values], dtype=object))
+        subset = domain_subset(domains, hemisphere)
+        if subset:
+            keep = np.isin(all_tracks.track_domain.values, subset) | np.isin(all_tracks.tc_domain.values, subset)
+            all_tracks = all_tracks.isel(record=keep)
+        out = all_nature_file(out_dir, experiment, year, hemisphere, subset)
         if os.path.exists(out):
             os.remove(out)
-        huracanpy.save(all_tracks, out)
-        nat = pd.Series(all_tracks.nature.values).value_counts()
-        print(f"[{label}] all-nature file: {all_tracks.track_id.to_series().nunique()} tracks, points by nature "
-              f"{', '.join(f'{k} {v}' for k, v in nat.items())} -> {os.path.basename(out)}")
+        if all_tracks.sizes["record"]:
+            huracanpy.save(all_tracks, out)
+            nat = pd.Series(all_tracks.nature.values).value_counts()
+            print(f"[{label}] all-nature file: {all_tracks.track_id.to_series().nunique()} tracks, points by nature "
+                  f"{', '.join(f'{k} {v}' for k, v in nat.items())} -> {os.path.basename(out)}")
+        else:
+            print(f"[{label}] all-nature file: no tracks in {', '.join(subset)} - not written")
     n_out = int(domain_of.isna().sum())
     if n_out:
         print(f"[{label}] {n_out} TC tracks peak outside every domain (not saved)")
@@ -544,6 +579,9 @@ def main():
     p.add_argument("--data-dir", default=DATA_DIR)
     p.add_argument("--out-dir", default=OUT_DIR)
     p.add_argument("--hemispheres", nargs="+", default=["N", "S"], choices=["N", "S"])
+    p.add_argument("--domains", nargs="+", choices=list(DOMAINS), default=None,
+                   help="process only these domains (default: all); hemispheres without any are skipped, "
+                        "and --all-nature files keep only tracks in these domains (track_domain or tc_domain)")
     p.add_argument("--input-nh", default=INPUT_PATTERNS["N"],
                    help="NH file pattern relative to --data-dir, with {experiment} and {year}")
     p.add_argument("--input-sh", default=INPUT_PATTERNS["S"],
@@ -573,12 +611,15 @@ def main():
         for year in args.years:
             for hemisphere in args.hemispheres:
                 domains = {n: d for n, d in DOMAINS.items()
-                           if d["hemisphere"] == hemisphere and n not in SKIP_DOMAINS}
+                           if d["hemisphere"] == hemisphere and n not in SKIP_DOMAINS
+                           and (args.domains is None or n in args.domains)}
+                if not domains:
+                    continue
                 if not args.overwrite:
                     done = {n for n in domains
                             if os.path.exists(os.path.join(args.out_dir, f"{experiment}_{year}_{n}_summary.parquet"))}
-                    if args.all_nature and not os.path.exists(
-                            all_nature_file(args.out_dir, experiment, year, hemisphere)):
+                    if args.all_nature and not os.path.exists(all_nature_file(
+                            args.out_dir, experiment, year, hemisphere, domain_subset(domains, hemisphere))):
                         done = set()  # TC outputs exist but the all-nature file does not: run it
                     if done == set(domains):
                         skipped.append(f"{experiment} {year} {hemisphere}H")
