@@ -264,8 +264,16 @@ whole set the identification starts from, ~8000 tracks per hemisphere per year
 for N1280), with per-point `is_tc` (the WCSI flag, before the genesis-latitude
 filter), `nature` (non-TC tracks get BC/Tr/MV/Ot/Vo) and `tc_domain` (the
 domain whose `_TCs.nc` file the track was saved in, empty if it is not one of
-the saved TCs). Years whose TC files exist but whose all-nature file does not
+the saved TCs), `basin` (huracanpy WMO basin of the point) and `track_domain`
+(the domain of the track's maximum |vorticity| over its whole life, empty if in
+no domain). Years whose TC files exist but whose all-nature file does not
 are processed, not skipped.
+
+**`--domains`** (e.g. `--domains NATL`) processes only the listed domains;
+hemispheres with none of them are skipped. The all-nature file then keeps only
+tracks whose `track_domain` or `tc_domain` is one of them, and is named
+`{experiment}_{year}_{NH|SH}_{DOM1-DOM2}_all_nature.nc`. Both are needed: a TC
+can peak in its TC phase in one domain and over its whole life in another.
 
 `nature` is computed one track at a time. `wcsi.nature()` (wcsi 2.1.0), given
 many tracks concatenated in one array, lets a run of TC labels at the end of
